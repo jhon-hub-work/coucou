@@ -1,4 +1,4 @@
-// The island: DOM shell, sizing animation, Mochi placement, mouse handling.
+// The island: DOM shell, sizing animation, Boo placement, mouse handling.
 // Mirrors IslandRootView.swift + IslandWindowController.swift.
 
 import { Tracked, Spring, clamp } from "../core/anim";
@@ -11,9 +11,9 @@ import {
 } from "../core/layout";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
-import { BotEngine, hexToRGB } from "../mochi/engine";
-import { Greeting } from "../mochi/greeting";
-import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../mochi/minibots";
+import { BotEngine, hexToRGB } from "../boo/engine";
+import { Greeting } from "../boo/greeting";
+import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../boo/minibots";
 import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
@@ -38,6 +38,14 @@ export class Island {
   private root: HTMLElement;
   private islandEl!: HTMLElement;
   private clipEl!: HTMLElement;
+  private glassEl!: HTMLElement;
+  private glassTimer: number | null = null;
+  private glassCapturing = false;
+  private glassVisible = false;
+  private glassMode: IslandMode = "hidden";
+  private glassEpoch = 0;
+  private drawGlass: (() => void) | null = null;
+  private glassImage = new Image();
   private contentEl!: HTMLElement;
   private viewsEl!: HTMLElement;
   private botCanvas!: HTMLCanvasElement;
@@ -96,9 +104,11 @@ export class Island {
     this.engine.onDizzy = () => this.handleDizzy();
     this.greeting.onComplete = () => this.fsm.greetComplete();
     State.subscribe(() => {
+      this.syncGlass();
       this.dirty = true;
       this.ensureRunning();
     });
+    document.addEventListener("visibilitychange", () => this.syncGlass());
   }
 
   // ── DOM ─────────────────────────────────────────────────────────────────────
@@ -112,8 +122,8 @@ export class Island {
         Sound.play("blip");
       },
       openTerminal: () => {
-        const cwd = State.focusTask?.sessionCwd ?? null;
-        void Bridge.openInVSCode(cwd);
+        const task = State.focusTask;
+        void Bridge.focusAgent(task?.windowPids ?? [], task?.sessionCwd ?? null);
       },
       // The ↗ button — same targets as openAgentTarget() on macOS.
       openTarget: () => {
@@ -127,8 +137,11 @@ export class Island {
           integration_notion: "https://notion.so",
           integration_calcom: "https://app.cal.com/bookings",
         };
-        if (task.id === "integration_claude") void Bridge.openInVSCode(task.sessionCwd ?? null);
+        if (task.id === "integration_claude" || task.id.startsWith("agent_")) {
+          void Bridge.focusAgent(task.windowPids ?? [], task.sessionCwd ?? null);
+        }
         else if (task.id === "integration_n8n") void Bridge.openN8n();
+        else if (task.id === "integration_board") void Bridge.openBoard();
         else if (urls[task.id]) void Bridge.openUrl(urls[task.id]);
       },
       openUrl: (url) => {
@@ -143,8 +156,9 @@ export class Island {
         State.pendingApproval = null;
         State.isPinned = false;
         this.fsm.pinned = false;
-        State.updateTask("integration_claude", "working");
-        State.setPillBadge("integration_claude", null);
+        const asker = req.agentId ?? "integration_claude";
+        State.updateTask(asker, "working");
+        State.setPillBadge(asker, null);
         this.setView(State.defaultView());
       },
       toggleSound: () => {
@@ -182,7 +196,7 @@ export class Island {
     for (const v of this.views.values()) this.viewsEl.append(v.el);
     this.contentEl = h("div", { id: "content" }, this.header.el, this.viewsEl);
 
-    // The drop sequence draws the card, the bar and its own Mochi. It sits under
+    // The drop sequence draws the card, the bar and its own Boo. It sits under
     // the header, which stays visible on top of it exactly as on macOS.
     this.uploadCanvas = new UploadCanvas({
       ask: () => {
@@ -194,9 +208,12 @@ export class Island {
       cancel: () => this.setView(State.defaultView()),
     });
 
+    this.glassEl = h("div", { id: "glass-background", "aria-hidden": "true" });
+    this.glassImage.onload = () => this.loadGlassLens();
     this.clipEl = h(
       "div",
       { id: "island-clip" },
+      this.glassEl,
       this.greetingCanvas,
       this.uploadCanvas.el,
       this.contentEl,
@@ -223,6 +240,166 @@ export class Island {
 
   // ── FSM ─────────────────────────────────────────────────────────────────────
 
+  private syncGlass() {
+    this.islandEl.dataset.glass = State.settings.glass ?? "clear";
+    const visible = IS_TAURI && State.mode !== "hidden" && !document.hidden;
+    if (visible) this.drawGlass?.();
+    this.islandEl.dataset.glassVisible = String(State.mode !== "hidden" && !document.hidden);
+    if (visible === this.glassVisible && State.mode === this.glassMode) return;
+    this.glassMode = State.mode;
+    this.glassVisible = visible;
+    this.glassEpoch++;
+    if (this.glassTimer != null) window.clearTimeout(this.glassTimer);
+    this.glassTimer = null;
+    if (visible && !this.glassCapturing) {
+      // Let the native panel grow from its wake strip before taking the first image.
+      this.glassTimer = window.setTimeout(() => void this.refreshGlass(), 80);
+    }
+  }
+
+  private async refreshGlass() {
+    this.glassTimer = null;
+    if (!this.glassVisible || this.glassCapturing) return;
+    this.glassCapturing = true;
+    const epoch = this.glassEpoch;
+    try {
+      const image = await Bridge.glassSnapshot();
+      if (image && this.glassVisible && epoch === this.glassEpoch) {
+        this.glassEl.style.backgroundSize = `${image.width}px ${image.height}px`;
+        this.glassEl.style.backgroundImage = `url("${image.dataUrl}")`;
+        this.islandEl.style.setProperty("--glass-image", `url("${image.dataUrl}")`);
+        this.glassEl.dataset.panelWidth = String(image.width);
+        this.glassEl.dataset.panelHeight = String(image.height);
+        this.glassImage.src = image.dataUrl;
+      }
+    } finally {
+      this.glassCapturing = false;
+      if (this.glassVisible) {
+        this.glassTimer = window.setTimeout(() => void this.refreshGlass(),
+          epoch === this.glassEpoch ? 1500 : 80);
+      }
+    }
+  }
+
+  private loadGlassLens() {
+    if (!this.glassVisible) return;
+    let canvas = this.glassEl.querySelector("canvas");
+    if (canvas) {
+      this.drawGlass?.();
+      return;
+    }
+    canvas = h("canvas");
+    const gl = canvas.getContext("webgl", { alpha: false, antialias: false, depth: false, preserveDrawingBuffer: true });
+    if (!gl) return; // The captured CSS backdrop remains when GPU rendering is unavailable.
+    const program = gl.createProgram()!;
+    const compile = (kind: number, source: string) => {
+      const shader = gl.createShader(kind)!;
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        gl.deleteShader(shader);
+        throw new Error("Glass shader unavailable");
+      }
+      gl.attachShader(program, shader);
+      gl.deleteShader(shader);
+    };
+    try {
+      compile(gl.VERTEX_SHADER, `attribute vec2 position; varying vec2 uv;
+        void main() { uv = (position + 1.0) * 0.5; gl_Position = vec4(position, 0.0, 1.0); }`);
+      // 27launch's SheetGlass optics: a sharp centre, quadratic edge pull and five soft samples.
+      // The distance follows Boo's existing flat top and rounded bottom, rather than a rectangle.
+      compile(gl.FRAGMENT_SHADER, `precision highp float;
+        varying vec2 uv; uniform sampler2D screen; uniform vec2 panel;
+        uniform vec4 shape;
+        float distanceToEdge(vec2 p) {
+          float r = p.y > shape.y * 0.5 ? min(shape.z, min(shape.x, shape.y) * 0.5) : 0.0;
+          vec2 q = abs(p - shape.xy * 0.5) - (shape.xy * 0.5 - r);
+          return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+        }
+        vec3 sampleScreen(vec2 p) {
+          return texture2D(screen, (p + vec2((panel.x - shape.x) * 0.5, 0.0)) / panel).rgb;
+        }
+        void main() {
+          vec2 p = vec2(uv.x, 1.0 - uv.y) * shape.xy;
+          float d = distanceToEdge(p);
+          float k = clamp(1.0 + d / min(24.0, shape.y * 0.5), 0.0, 1.0);
+          vec2 normal = vec2(distanceToEdge(p + vec2(0.5, 0.0)) - distanceToEdge(p - vec2(0.5, 0.0)),
+                             distanceToEdge(p + vec2(0.0, 0.5)) - distanceToEdge(p - vec2(0.0, 0.5)));
+          normal /= max(length(normal), 0.001);
+          vec2 q = shape.xy * 0.5 + (p - shape.xy * 0.5) / 1.03 + normal * k * k * 13.0;
+          float s = shape.w * (0.35 + k * k);
+          vec3 c = sampleScreen(q) * 0.4
+            + (sampleScreen(q + vec2(s, 0.0)) + sampleScreen(q - vec2(s, 0.0))
+             + sampleScreen(q + vec2(0.0, s)) + sampleScreen(q - vec2(0.0, s))) * 0.15;
+          float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+          c = mix(vec3(luma), c, 1.5) * 1.05 + 0.04;
+          float line = smoothstep(0.88, 1.0, k) * (1.0 - smoothstep(0.985, 1.0, k));
+          c += line * 0.35 - smoothstep(0.55, 1.0, k) * 0.06;
+          gl_FragColor = vec4(c, 1.0);
+        }`);
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error("Glass shader unavailable");
+    } catch {
+      gl.deleteProgram(program);
+      return;
+    }
+    gl.useProgram(program);
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    const position = gl.getAttribLocation(program, "position");
+    gl.enableVertexAttribArray(position);
+    gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const shape = gl.getUniformLocation(program, "shape");
+    const panel = gl.getUniformLocation(program, "panel");
+    let uploaded = "";
+    let drawn = "";
+    this.drawGlass = () => {
+      if (!this.glassVisible || gl.isContextLost() || !this.glassImage.complete || !this.glassImage.naturalWidth) return;
+      if (uploaded !== this.glassImage.src) {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.glassImage);
+        uploaded = this.glassImage.src;
+        drawn = "";
+      }
+      const w = Math.max(1, this.width.value), height = Math.max(1, this.height.value);
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const frame = `${w},${height},${this.radius.value},${dpr},${State.settings.glass},${State.view}`;
+      if (drawn === frame) return;
+      drawn = frame;
+      const cw = Math.round(w * dpr), ch = Math.round(height * dpr);
+      if (canvas.width !== cw) canvas.width = cw;
+      if (canvas.height !== ch) canvas.height = ch;
+      gl.viewport(0, 0, cw, ch);
+      gl.uniform2f(panel, Number(this.glassEl.dataset.panelWidth), Number(this.glassEl.dataset.panelHeight));
+      gl.uniform4f(shape, w, height, this.radius.value, State.settings.glass === "tinted" ? 6 : 1.2);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      // LensDrawable in 27launch magnifies the same screen image about each control's centre.
+      const panelW = Number(this.glassEl.dataset.panelWidth);
+      const panelH = Number(this.glassEl.dataset.panelHeight);
+      const panelLeft = this.islandEl.getBoundingClientRect().left - (panelW - w) / 2;
+      for (const layer of this.clipEl.querySelectorAll<HTMLElement>(
+        ".card, .pill, .tab.on, .btn.secondary, .chip, .bubble, .chat-bar, .code, .drop-tags span, .seg button.on, .int-pill, .int-badge")) {
+        const rect = layer.getBoundingClientRect();
+        layer.style.setProperty("--glass-lens-size", `${panelW * 1.15}px ${panelH * 1.15}px`);
+        layer.style.setProperty("--glass-lens-position",
+          `${rect.width / 2 - (rect.left - panelLeft + rect.width / 2) * 1.15}px ${rect.height / 2 - (rect.top + rect.height / 2) * 1.15}px`);
+      }
+    };
+    canvas.addEventListener("webglcontextlost", (event) => {
+      event.preventDefault();
+      this.drawGlass = null;
+      canvas.remove();
+    });
+    this.glassEl.append(canvas);
+    this.drawGlass();
+  }
+
   private wireFsm() {
     this.fsm.homeToPetitDelay = State.settings.autoCloseInterval;
     this.fsm.onTransition = (from, to) => {
@@ -231,17 +408,17 @@ export class Island {
           this.setMode("hidden");
           break;
         case "petit":
-          if (from === "coucou") this.greeting.interrupt();
+          if (from === "boo") this.greeting.interrupt();
           else if (from === "hidden") Sound.play("peek");
           this.setMode("compact");
-          if (from === "coucou") State.view = State.defaultView();
+          if (from === "boo") State.view = State.defaultView();
           if (!this.wasInIsland) this.fsm.mouseLeft();
           break;
         case "home":
           this.expand(State.defaultView());
           if (!this.wasInIsland) this.fsm.mouseLeft();
           break;
-        case "coucou":
+        case "boo":
           this.expand("greeting");
           this.greeting.start();
           break;
@@ -380,7 +557,7 @@ export class Island {
   }
 
   /**
-   * Mochi eats the file. Nothing here waits on the file system: the copy into
+   * Boo eats the file. Nothing here waits on the file system: the copy into
    * the inbox runs in the background and swaps the path in when it lands, so a
    * slow disk can never stall the animation — same as FileDropHandler on macOS.
    */
@@ -422,7 +599,7 @@ export class Island {
 
   /**
    * Sounds and view changes hung off the canvas timeline: a `tick` every 10 %,
-   * the ✓ chime when the bar completes, then `choose` once Mochi has grown back.
+   * the ✓ chime when the bar completes, then `choose` once Boo has grown back.
    */
   private stepSequence() {
     const since = UploadSeq.sinceDrop();
@@ -476,6 +653,8 @@ export class Island {
     this.islandEl.style.width = `${w}px`;
     this.islandEl.style.height = `${hh}px`;
     this.islandEl.style.borderRadius = `0 0 ${r}px ${r}px`;
+    this.islandEl.style.setProperty("--glass-radius", `${r}px`);
+    this.drawGlass?.();
     this.islandEl.style.transform = `translateX(-50%)`;
     // These follow the island as it resizes, so they belong here rather than in
     // the state-driven DOM sync.
@@ -586,7 +765,7 @@ export class Island {
       y >= rect.y - HIT_MARGIN && y <= rect.y + rect.h + HIT_MARGIN;
 
     if (inIsland && !this.wasInIsland) {
-      if (this.fsm.state === "coucou") this.greeting.hover();
+      if (this.fsm.state === "boo") this.greeting.hover();
       this.fsm.mouseEntered();
       this.homeCollapseAt = null;
     }
@@ -706,7 +885,7 @@ export class Island {
         this.greeting.draw(gctx);
       }
     } else {
-      // Kept running even while the drop canvas is up, so the island's own Mochi
+      // Kept running even while the drop canvas is up, so the island's own Boo
       // is already in the right place the moment the canvas fades out.
       this.drawBot(dt);
     }
@@ -750,7 +929,7 @@ export class Island {
     this.botSize.target = p.diameter / 0.6;
 
     const greetingActive = State.mode === "expanded" && State.view === "greeting";
-    // The drop canvas draws its own Mochi; two of them would overlap.
+    // The drop canvas draws its own Boo; two of them would overlap.
     const visible = p.opacity > 0 && !greetingActive && !this.uploadActive;
     this.botCanvas.style.opacity = visible ? "1" : "0";
 

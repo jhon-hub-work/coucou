@@ -1,4 +1,4 @@
-// Draws Mochi into the PNG/ICO set Tauri needs. No dependencies: the icons are
+// Draws Boo into the PNG/ICO set Tauri needs. No dependencies: the icons are
 // rasterised here and encoded with node:zlib, so the app icon stays "drawn in
 // code" like the character itself.
 //
@@ -11,98 +11,94 @@ import { fileURLToPath } from "node:url";
 
 const OUT = join(dirname(fileURLToPath(import.meta.url)), "..", "src-tauri", "icons");
 
-// ── Mochi ─────────────────────────────────────────────────────────────────────
+// ── Boo ─────────────────────────────────────────────────────────────────────
+// A small white ghost (dome head, straight sides, scalloped hem) on a rounded
+// deep-purple tile. The tile keeps it legible at 16 px on both light and dark
+// tray backgrounds.
 
-const BASE_TOP = [255, 250, 245]; // #FFFAF5
-const BASE_BOTTOM = [221, 204, 191]; // #DDCCBF
-const INK = [26, 20, 18]; // #1A1412
-const RIM = [0, 0, 0];
+const TILE_TOP = [91, 53, 147]; // #5B3593
+const TILE_BOTTOM = [59, 31, 102]; // #3B1F66
+const GHOST_TOP = [250, 250, 255];
+const GHOST_BOTTOM = [225, 228, 245];
+const INK = [42, 20, 80]; // #2A1450
 
-const SS = 4; // supersampling factor
+const SS = 5; // supersampling factor
 
-/** Superellipse (exponent 2.7) test in body-local coordinates. */
-function insideBody(x, y, rx, ry) {
-  const n = 2.7;
-  return Math.pow(Math.abs(x / rx), n) + Math.pow(Math.abs(y / ry), n) <= 1;
+/** Ghost silhouette test in body-local coords (same shape as src/boo/ghost.ts). */
+function insideGhost(x, y, rx, ry, scallops) {
+  const dh = rx;
+  const yc = -ry + dh;
+  const amp = ry * 0.2;
+  const hem = ry - amp;
+  if (y < yc) {
+    const a = x / rx;
+    const b = (y - yc) / dh;
+    return a * a + b * b <= 1;
+  }
+  const t = Math.min(1, (y - yc) / (hem - yc));
+  if (Math.abs(x) > rx * (1 + 0.06 * t)) return false;
+  const W = rx * 1.06;
+  const k = Math.max(0, Math.min(scallops - 1e-4, ((x + W) / (2 * W)) * scallops));
+  const f = k - Math.floor(k);
+  return y <= hem + amp * Math.sqrt(Math.max(0, 1 - (2 * f - 1) ** 2));
 }
 
-function insidePill(x, y, w, h) {
-  const hw = w / 2;
-  const hh = h / 2;
-  const r = Math.min(hw, hh);
-  const cx = Math.max(-hw + r, Math.min(hw - r, x));
-  const cy = Math.max(-hh + r, Math.min(hh - r, y));
+function insideEllipse(x, y, cx, cy, ax, ay) {
+  return ((x - cx) / ax) ** 2 + ((y - cy) / ay) ** 2 <= 1;
+}
+
+function insideRoundRect(x, y, size, r) {
+  const cx = Math.max(r, Math.min(size - r, x));
+  const cy = Math.max(r, Math.min(size - r, y));
   return (x - cx) ** 2 + (y - cy) ** 2 <= r * r;
 }
 
-function renderMochi(size) {
-  const px = new Uint8Array(size * size * 4);
-  const R = size * 0.34;
-  const rx = R * 1.14;
-  const ry = R * 0.88;
-  const cx = size / 2;
-  const cy = size / 2 + R * 0.06;
-  const rim = R * 0.055; // dark outline so the tray icon reads on light themes
+const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
 
-  // Eyes — same geometry as BotEngine (yaw ±0.37, pitch −0.12)
-  const eyeYaw = 0.37;
-  const eyePitch = -0.12;
-  const cp = Math.cos(eyePitch);
-  const ex = Math.sin(eyeYaw) * cp * rx;
-  const ey = -Math.sin(eyePitch) * ry;
-  const fx = Math.max(0.18, Math.cos(eyeYaw));
-  const fy = Math.max(0.18, cp);
-  const ew = R * 0.25 * fx;
-  const eh = R * 0.27 * fy;
+function renderBoo(size) {
+  const px = new Uint8Array(size * size * 4);
+  const rx = size * 0.29;
+  const ry = size * 0.34;
+  const cx = size / 2;
+  const cy = size / 2 + size * 0.01;
+  const scallops = size <= 32 ? 3 : 4;
+  const tileR = size * 0.22;
+  const eyeDx = rx * 0.4;
+  const eyeY = ry * 0.08;
+  const eyeAx = rx * 0.17;
+  const eyeAy = ry * 0.22;
+  const showMouth = size >= 48;
 
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      let bodyHits = 0;
-      let rimHits = 0;
-      let eyeHits = 0;
+      let r = 0, g = 0, b = 0, a = 0;
       for (let sy = 0; sy < SS; sy++) {
         for (let sx = 0; sx < SS; sx++) {
-          const px0 = x + (sx + 0.5) / SS - cx;
-          const py0 = y + (sy + 0.5) / SS - cy;
-          if (!insideBody(px0, py0, rx + rim, ry + rim)) continue;
-          rimHits++;
-          if (!insideBody(px0, py0, rx, ry)) continue;
-          bodyHits++;
-          if (
-            insidePill(px0 + ex, py0 - ey, ew, eh) ||
-            insidePill(px0 - ex, py0 - ey, ew, eh)
-          ) {
-            eyeHits++;
+          const fx = x + (sx + 0.5) / SS;
+          const fy = y + (sy + 0.5) / SS;
+          if (!insideRoundRect(fx, fy, size, tileR)) continue;
+          let c = mix(TILE_TOP, TILE_BOTTOM, fy / size);
+          const lx = fx - cx;
+          const ly = fy - cy;
+          if (insideGhost(lx, ly, rx, ry, scallops)) {
+            c = mix(GHOST_TOP, GHOST_BOTTOM, (ly + ry) / (2 * ry));
+            if (
+              insideEllipse(lx, ly, -eyeDx, eyeY, eyeAx, eyeAy) ||
+              insideEllipse(lx, ly, eyeDx, eyeY, eyeAx, eyeAy) ||
+              (showMouth && insideEllipse(lx, ly, 0, eyeY + eyeAy * 1.9, eyeAx * 0.7, eyeAy * 0.45))
+            ) {
+              c = INK;
+            }
           }
+          r += c[0]; g += c[1]; b += c[2]; a += 1;
         }
       }
-      if (rimHits === 0) continue;
-
-      const total = SS * SS;
-      const rimA = rimHits / total;
-      const bodyA = bodyHits / total;
-      const eyeA = eyeHits / total;
-
-      // Body gradient: top-right → bottom-left, like the Canvas gradient.
-      const t = Math.min(1, Math.max(0, ((x - cx) * -0.6 + (y - cy) * 0.8) / (2 * ry) + 0.5));
-      const body = [0, 1, 2].map((i) => BASE_TOP[i] + (BASE_BOTTOM[i] - BASE_TOP[i]) * t);
-
-      // rim under body, body over rim, eyes over body
-      let col = RIM.slice();
-      let alpha = rimA;
-      if (bodyA > 0) {
-        col = col.map((c, i) => c * (1 - bodyA / rimA) + body[i] * (bodyA / rimA));
-        alpha = rimA;
-      }
-      if (eyeA > 0) {
-        col = col.map((c, i) => c * (1 - eyeA) + INK[i] * eyeA);
-      }
-
+      if (a === 0) continue;
       const o = (y * size + x) * 4;
-      px[o] = Math.round(col[0]);
-      px[o + 1] = Math.round(col[1]);
-      px[o + 2] = Math.round(col[2]);
-      px[o + 3] = Math.round(Math.min(1, alpha) * 255);
+      px[o] = Math.round(r / a);
+      px[o + 1] = Math.round(g / a);
+      px[o + 2] = Math.round(b / a);
+      px[o + 3] = Math.round((a / (SS * SS)) * 255);
     }
   }
   return px;
@@ -182,7 +178,7 @@ function encodeICO(entries) {
 
 mkdirSync(OUT, { recursive: true });
 
-const png = (size) => encodePNG(size, renderMochi(size));
+const png = (size) => encodePNG(size, renderBoo(size));
 
 const files = {
   "32x32.png": png(32),

@@ -1,5 +1,5 @@
 {
-  "name": "coucou-windows",
+  "name": "boo-windows",
   "private": true,
   "version": "0.1.1",
   "type": "module",
@@ -8,9 +8,10 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "icons": "node scripts/gen-icons.mjs",
+    "sounds": "node scripts/gen-sounds.mjs",
     "tauri": "tauri",
-    "predev": "cargo build --release -p coucou-hook",
-    "prebuild": "cargo build --release -p coucou-hook",
+    "predev": "cargo build --release -p boo-hook",
+    "prebuild": "cargo build --release -p boo-hook",
     "pack": "tauri build && node scripts/pack.mjs"
   },
   "devDependencies": {

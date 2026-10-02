@@ -3,7 +3,7 @@
 // integrations land here too in a later stage.
 
 import "./settings.css";
-import { Bridge, onEvent, type HookStatus } from "../core/bridge";
+import { Bridge, onEvent, type AgentStatus, type HookStatus } from "../core/bridge";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
 import { h, clear } from "../views/dom";
 
@@ -67,7 +67,7 @@ function claudeSection(status: HookStatus): HTMLElement {
       h("div", {
         class: "hint",
         text: status.installed
-          ? "Coucou is hooked into your Claude Code sessions. Tool calls, questions and permission requests show up in the island, and you can answer them there."
+          ? "Boo is hooked into your Claude Code sessions. Tool calls, questions and permission requests show up in the island, and you can answer them there."
           : "Install the hooks to see your Claude Code sessions in the island and approve permissions without leaving what you are doing.",
       }),
       h("div", { class: "row" },
@@ -84,7 +84,7 @@ function claudeSection(status: HookStatus): HTMLElement {
     if (!status.hookReady) {
       body.append(h("div", {
         class: "notice warn",
-        text: "coucou-hook.exe is not in place yet. Restart Coucou; if it still fails, build it with `cargo build -p coucou-hook`.",
+        text: "boo-hook.exe is not in place yet. Restart Boo; if it still fails, build it with `cargo build -p boo-hook`.",
       }));
     }
 
@@ -135,7 +135,7 @@ function claudeSection(status: HookStatus): HTMLElement {
         class: "hint",
         text: install
           ? "This is exactly what will change in your settings.json. Your own hooks are left untouched."
-          : "This removes Coucou's entries only. Your own hooks are left untouched.",
+          : "This removes Boo's entries only. Your own hooks are left untouched.",
       }),
       renderDiff(preview.diff),
       h("div", { class: "row" },
@@ -171,21 +171,146 @@ function claudeSection(status: HookStatus): HTMLElement {
   return section;
 }
 
-// ── Claude API section ────────────────────────────────────────────────────────
+// ── Other agents: OpenCode, Codex CLI, jcode ──────────────────────────────────
+
+/** Same flow as claudeSection — preview the diff, back up, write on a click — for
+ *  an agent whose config lives somewhere else. */
+function agentSection(status: AgentStatus): HTMLElement {
+  const body = h("div", { style: "display:flex;flex-direction:column;gap:12px" });
+  const section = h("section", {}, h("h2", {}, statusDot(status.installed), h("span", { text: status.label })), body);
+
+  const rebuild = async () => {
+    const all = (await Bridge.agentsStatus()) ?? [];
+    const fresh = all.find((a) => a.id === status.id);
+    if (fresh) Object.assign(status, fresh);
+    clear(body);
+    draw();
+    const head = section.querySelector("h2")!;
+    clear(head);
+    head.append(statusDot(status.installed), h("span", { text: status.label }));
+  };
+
+  function draw() {
+    body.append(
+      h("div", {
+        class: "hint",
+        text: status.installed
+          ? `Boo is watching your ${status.label} sessions. ${status.summary}`
+          : `Install to see your ${status.label} sessions in the island. ${status.summary}`,
+      }),
+      h("div", { class: "row" },
+        h("label", { text: "Config" }),
+        h("span", { class: "path", text: status.configPath }),
+      ),
+    );
+    if (!status.available) {
+      body.append(h("div", {
+        class: "notice warn",
+        text: `${status.label} doesn't look installed on this PC (its config folder is missing). You can still install; it takes effect once ${status.label} runs.`,
+      }));
+    }
+    if (!status.hookReady) {
+      body.append(h("div", {
+        class: "notice warn",
+        text: "boo-hook.exe is not in place yet. Restart Boo; if it still fails, build it with `cargo build -p boo-hook`.",
+      }));
+    }
+    const actions = h("div", { class: "row" });
+    const install = h("button", {
+      class: "primary",
+      text: status.installed ? "Reinstall…" : "Install…",
+      onclick: () => showPreview(true),
+    });
+    if (!status.hookReady) {
+      install.disabled = true;
+      install.title = "The relay isn't installed yet.";
+    }
+    actions.append(install);
+    if (status.installed) {
+      actions.append(h("button", { class: "danger", text: "Uninstall…", onclick: () => showPreview(false) }));
+    }
+    body.append(actions);
+  }
+
+  async function showPreview(install: boolean) {
+    let preview;
+    try {
+      preview = await Bridge.agentsPreview(status.id, install);
+    } catch (err) {
+      clear(body);
+      body.append(
+        h("div", { class: "notice err", text: String(err).replace(/^Error:\s*/, "") }),
+        h("div", { class: "row" }, h("button", { text: "Back", onclick: () => { clear(body); draw(); } })),
+      );
+      return;
+    }
+    if (!preview) return;
+    clear(body);
+    body.append(
+      h("div", {
+        class: "hint",
+        text: install
+          ? "This is exactly what will change. Anything of yours already in there is left untouched."
+          : "This removes Boo's entries only. Anything of yours is left untouched.",
+      }),
+      renderDiff(preview.diff),
+      h("div", { class: "row" }, h("span", {
+        class: "path",
+        text: preview.backup ? `Backup → ${preview.backup}` : "Nothing to back up: this file doesn't exist yet.",
+      })),
+    );
+    for (const note of preview.notes) body.append(h("div", { class: "notice warn", text: note }));
+    const confirm = h("button", {
+      class: install ? "primary" : "danger",
+      text: install ? "Back up and write" : "Back up and remove",
+    });
+    confirm.addEventListener("click", async () => {
+      confirm.disabled = true;
+      try {
+        const backup = await Bridge.agentsApply(status.id, install, preview.fingerprint);
+        clear(body);
+        body.append(h("div", {
+          class: "notice ok",
+          text: `Done.${backup ? ` Previous version saved as ${backup}.` : ""} Start a new ${status.label} session to pick it up.`,
+        }));
+        window.setTimeout(() => void rebuild(), 2600);
+      } catch (err) {
+        confirm.disabled = false;
+        body.append(h("div", { class: "notice err", text: `Could not write: ${String(err)}` }));
+      }
+    });
+    body.append(h("div", { class: "row" }, confirm, h("button", {
+      text: "Cancel",
+      onclick: () => { clear(body); draw(); },
+    })));
+  }
+
+  draw();
+  return section;
+}
+
+// ── OpenCode Go section ───────────────────────────────────────────────────────
 
 const MODELS: [string, string][] = [
-  ["claude-opus-5", "Claude Opus 5"],
-  ["claude-sonnet-5", "Claude Sonnet 5"],
-  ["claude-haiku-4-5", "Claude Haiku 4.5"],
+  ["deepseek-v4-flash", "DeepSeek V4 Flash"],
+  ["deepseek-v4-pro", "DeepSeek V4 Pro"],
+  ["glm-5.3", "GLM 5.3"],
+  ["glm-5.3-flash", "GLM 5.3 Flash"],
+  ["kimi-k3", "Kimi K3 (reads images)"],
+  ["qwen3.8-flash", "Qwen 3.8 Flash (reads images)"],
+  ["grok-4.7", "Grok 4.7"],
+  ["gpt-6-luna", "GPT-6 Luna"],
 ];
 
-function apiSection(hasKey: boolean): HTMLElement {
-  const dot = statusDot(hasKey);
-  const state = h("span", { class: "hint", text: hasKey ? "Key saved in the Windows Credential Manager." : "No key yet — the chat needs one." });
+const KEY_NAME = "opencode-go-api-key";
+
+function apiSection(hasKey: boolean, hasLogin: boolean): HTMLElement {
+  const dot = statusDot(hasKey || hasLogin);
+  const state = h("span", { class: "hint" });
 
   const field = h("input", {
     type: "password",
-    placeholder: hasKey ? "••••••••••••  (stored)" : "sk-ant-...",
+    placeholder: "Paste an OpenCode Go key (optional)",
     style: "flex:1 1 auto;min-width:0",
     autocomplete: "off",
     spellcheck: "false",
@@ -196,13 +321,16 @@ function apiSection(hasKey: boolean): HTMLElement {
   const feedback = h("div", {});
 
   async function refresh() {
-    const present = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
-    dot.style.background = present ? "#22c55e" : "#f4505e";
-    state.textContent = present
+    const saved = (await Bridge.secretPresent(KEY_NAME)) ?? false;
+    const login = (await Bridge.chatLoginAvailable()) ?? false;
+    dot.style.background = saved || login ? "#22c55e" : "#f4505e";
+    state.textContent = saved
       ? "Key saved in the Windows Credential Manager."
-      : "No key yet — the chat needs one.";
-    field.placeholder = present ? "••••••••••••  (stored)" : "sk-ant-...";
-    clearBtn.style.display = present ? "" : "none";
+      : login
+        ? "No key saved — Boo is using your OpenCode login automatically."
+        : "No key yet. Log in to OpenCode Go or paste a key below.";
+    field.placeholder = saved ? "••••••••••••  (stored)" : "Paste an OpenCode Go key (optional)";
+    clearBtn.style.display = saved ? "" : "none";
   }
 
   saveBtn.addEventListener("click", async () => {
@@ -210,7 +338,7 @@ function apiSection(hasKey: boolean): HTMLElement {
     if (!value) return;
     clear(feedback);
     try {
-      await Bridge.secretSet("anthropic-api-key", value);
+      await Bridge.secretSet(KEY_NAME, value);
       field.value = "";
       feedback.append(h("div", { class: "notice ok", text: "Saved. It never touches disk." }));
       await refresh();
@@ -222,7 +350,7 @@ function apiSection(hasKey: boolean): HTMLElement {
   clearBtn.addEventListener("click", async () => {
     clear(feedback);
     try {
-      await Bridge.secretClear("anthropic-api-key");
+      await Bridge.secretClear(KEY_NAME);
       feedback.append(h("div", { class: "notice ok", text: "Key removed." }));
       await refresh();
     } catch (err) {
@@ -242,11 +370,12 @@ function apiSection(hasKey: boolean): HTMLElement {
   });
 
   clearBtn.style.display = hasKey ? "" : "none";
+  void refresh();
 
   return h(
     "section",
     {},
-    h("h2", {}, dot, h("span", { text: "Claude" })),
+    h("h2", {}, dot, h("span", { text: "OpenCode Go" })),
     state,
     h("div", { class: "row" }, h("label", { text: "API key" }), field, saveBtn, clearBtn),
     h("div", { class: "row" }, h("label", { text: "Model" }), model),
@@ -292,7 +421,7 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
 
   function updateNote() {
     const used = settings.activeIntegrations.length;
-    note.textContent = `Pick up to ${MAX_ACTIVE} pills to show next to Mochi — ${used}/${MAX_ACTIVE} in use. Keys are stored in the Windows Credential Manager, never on disk.`;
+    note.textContent = `Pick up to ${MAX_ACTIVE} pills to show next to Boo — ${used}/${MAX_ACTIVE} in use. Keys are stored in the Windows Credential Manager, never on disk.`;
   }
 
   for (const def of INTEGRATIONS) {
@@ -350,6 +479,51 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
           h("span", { style: "font-size:12.5px", text: def.name }),
         ),
         rows,
+      ),
+    );
+  }
+
+  // The video board has no key: it reads a local folder, so its row holds a path.
+  {
+    const id = "integration_board";
+    const sw = h("button", { class: settings.activeIntegrations.includes(id) ? "switch on" : "switch" });
+    sw.addEventListener("click", () => {
+      const on = settings.activeIntegrations.includes(id);
+      if (on) {
+        settings.activeIntegrations = settings.activeIntegrations.filter((x) => x !== id);
+      } else {
+        if (settings.activeIntegrations.length >= MAX_ACTIVE) return;
+        settings.activeIntegrations = [...settings.activeIntegrations, id];
+      }
+      sw.classList.toggle("on", !on);
+      updateNote();
+      void save();
+    });
+    const input = h("input", {
+      type: "text",
+      value: settings.boardDir,
+      spellcheck: "false",
+      style: "flex:1 1 auto;min-width:0",
+    }) as HTMLInputElement;
+    const saveBtn = h("button", { text: "Save" });
+    saveBtn.addEventListener("click", () => {
+      settings.boardDir = input.value.trim();
+      void save();
+    });
+    list.append(
+      h("div", { style: "display:flex;gap:12px;align-items:flex-start" },
+        h("div", { style: "display:flex;align-items:center;gap:8px;min-width:132px;padding-top:4px" },
+          sw,
+          h("i", { class: "dot", style: "background:#4FD1C5" }),
+          h("span", { style: "font-size:12.5px", text: "Video board" }),
+        ),
+        h("div", { style: "display:flex;flex-direction:column;gap:6px;flex:1 1 auto;min-width:0" },
+          h("div", { class: "row" },
+            h("label", { style: "min-width:104px", text: "Board folder" }),
+            input, saveBtn,
+          ),
+          h("div", { class: "hint", text: "Read-only: Boo only reads status.json, schedule.json and uploads.json there, every minute, and never writes to them." }),
+        ),
       ),
     );
   }
@@ -429,7 +603,9 @@ async function main() {
     installed: false, settingsPath: "", hookPath: "", hookReady: false,
   };
 
-  const hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
+  const agents = (await Bridge.agentsStatus()) ?? [];
+  const hasKey = (await Bridge.secretPresent(KEY_NAME)) ?? false;
+  const hasLogin = (await Bridge.chatLoginAvailable()) ?? false;
 
   const keys = [
     "stripe-api-key", "github-token", "vercel-token",
@@ -440,9 +616,10 @@ async function main() {
 
   clear(root);
   root.append(
-    h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),
+    h("h1", {}, h("span", { text: "Boo" }), h("span", { class: "version", text: version })),
     claudeSection(status),
-    apiSection(hasKey),
+    ...agents.map(agentSection),
+    apiSection(hasKey, hasLogin),
     integrationsSection(present),
     generalSection(),
     h("div", {

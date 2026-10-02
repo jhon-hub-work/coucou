@@ -69,8 +69,17 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
       h("button", {
         class: "link-btn",
         style: `color:${task.color}b3`,
-        text: "Open Visual Studio Code",
-        onclick: () => void Bridge.openInVSCode(task.sessionCwd ?? null),
+        text: "Show window",
+        onclick: () => void Bridge.focusAgent(task.windowPids ?? [], task.sessionCwd ?? null),
+      }),
+    );
+  } else if (task.id === "integration_board") {
+    actions.append(
+      h("button", {
+        class: "link-btn",
+        style: `color:${task.color}d9`,
+        text: "Open board",
+        onclick: () => void Bridge.openBoard(),
       }),
     );
   } else if (task.id === "integration_n8n") {
@@ -110,7 +119,7 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
   return h(
     "div",
     { class: "int-card" },
-    header(task.color, task.id === "integration_claude" ? "VS Code" : task.name, "Integration"),
+    header(task.color, task.id === "integration_claude" ? "Claude Code" : task.name, "Integration"),
     h("div", { class: "int-status" }, dot(statusColor, 5), h("span", { text: label })),
     actions,
   );
@@ -315,6 +324,89 @@ function calcomCard(): HTMLElement {
   return h("div", { class: "int-card" }, header("#C9956A", "Cal.com", "Schedule"), rows);
 }
 
+// ── Video board ───────────────────────────────────────────────────────────────
+
+const BOARD_TEAL = "#4FD1C5";
+const AMBER = "#F5A524";
+
+/** "Sat 3 Oct · 15:00" from the board's own date and Manila time, with no zone maths. */
+function boardWhen(date: string, time: string): string {
+  if (!date) return "no date yet";
+  const day = new Date(`${date}T00:00:00Z`).toLocaleDateString("en-AU", {
+    weekday: "short", day: "numeric", month: "short", timeZone: "UTC",
+  });
+  return `${day} · ${time}`;
+}
+
+function plural(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+function boardCard(): HTMLElement {
+  const d = get("integration_board");
+  const counts = (d.counts ?? {}) as Record<string, number>;
+  const next = d.next as { title: string; date: string; time: string; thumbOk: boolean } | null;
+  const rendering = (Array.isArray(d.rendering) ? d.rendering : []) as { title: string; detail: string }[];
+  const last = d.lastPosted as { title: string; date: string } | null;
+  const rows = h("div", { class: "int-rows tight" });
+
+  // 1. What posts next, and what is holding it back.
+  if (next) {
+    const note = String(d.nextNote ?? "");
+    rows.append(
+      h(
+        "div",
+        { class: "int-row first", style: `background:${next.thumbOk && !note ? BOARD_TEAL : AMBER}14`, title: note },
+        dot(next.thumbOk && !note ? "#22C55E" : AMBER, 5),
+        h("span", { class: "int-time", style: `color:${BOARD_TEAL}`, text: boardWhen(next.date, next.time) }),
+        h("span", { class: "int-name", text: next.title }),
+      ),
+    );
+  } else {
+    rows.append(h("div", { class: "int-empty", text: String(d.nextNote || "Nothing scheduled") }));
+  }
+
+  // 2. What waits on a person.
+  const waits: string[] = [];
+  if (counts.thumb) waits.push(plural(counts.thumb, "thumbnail"));
+  if (counts.drl) waits.push(`${counts.drl} for Dr L`);
+  if (counts.check) waits.push(plural(counts.check, "check"));
+  if (counts.approval) waits.push(plural(counts.approval, "approval"));
+  if (counts.issues) waits.push(plural(counts.issues, "issue"));
+  rows.append(
+    h(
+      "div",
+      { class: "int-row" },
+      dot(waits.length ? AMBER : "#22C55E", 4),
+      h("span", { class: "int-name", text: waits.length ? `Waiting: ${waits.join(" · ")}` : "Nothing waiting on you" }),
+    ),
+  );
+
+  // 3. What is rendering, or else what went out last.
+  if (rendering.length) {
+    const first = rendering[0];
+    const more = rendering.length > 1 ? ` +${rendering.length - 1}` : "";
+    rows.append(
+      h("div", { class: "int-row" }, dot(BOARD_TEAL, 4),
+        h("span", { class: "int-name", text: `${first.title}: ${first.detail}${more}` })),
+    );
+  } else if (last) {
+    rows.append(
+      h("div", { class: "int-row" }, dot("#6B7079", 4),
+        h("span", { class: "int-name", text: `Posted ${last.title}` }),
+        h("span", { class: "int-ago", text: timeAgo(last.date) })),
+    );
+  }
+
+  const queue = Number(d.queueLen ?? 0);
+  return h(
+    "div",
+    { class: "int-card" },
+    header(BOARD_TEAL, "Board", d.paused ? "Paused" : `${queue} queued`),
+    rows,
+  );
+}
+
 // ── n8n ───────────────────────────────────────────────────────────────────────
 
 function n8nCard(task: AgentTask, onDetail: () => void, openSettings: () => void): HTMLElement {
@@ -398,6 +490,8 @@ export function hasIntegrationData(id: string): boolean {
       return arr(id, "pages").length > 0;
     case "integration_calcom":
       return info.loaded;
+    case "integration_board":
+      return info.loaded;
     default:
       return false;
   }
@@ -426,6 +520,8 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
       return notionCard();
     case "integration_calcom":
       return calcomCard();
+    case "integration_board":
+      return boardCard();
     default:
       return idleCard(task, hooks.openSettings);
   }

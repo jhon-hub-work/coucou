@@ -53,7 +53,7 @@ fn client() -> reqwest::Client {
 }
 
 /// Set from the tray's Pause item. While it is on, nothing reaches the network:
-/// pausing Coucou has to mean pausing Coucou, not just hiding the island.
+/// pausing Boo has to mean pausing Boo, not just hiding the island.
 pub static PAUSED: AtomicBool = AtomicBool::new(false);
 
 pub fn set_paused(on: bool) {
@@ -63,6 +63,7 @@ pub fn set_paused(on: bool) {
 /// Spawns every poller with the macOS delays and intervals.
 pub fn start(app: AppHandle) {
     spawn(app.clone(), "integration_n8n", 3, 15, poll_n8n);
+    spawn(app.clone(), "integration_board", 4, 60, poll_board);
     spawn(app.clone(), "integration_vercel", 5, 30, poll_vercel);
     spawn(app.clone(), "integration_stripe", 6, 30, poll_stripe);
     spawn(app.clone(), "integration_resend", 6, 60, poll_resend);
@@ -113,6 +114,7 @@ pub async fn poll_once(app: AppHandle, id: &str) {
         "integration_resend" => poll_resend(app).await,
         "integration_notion" => poll_notion(app).await,
         "integration_calcom" => poll_calcom(app).await,
+        "integration_board" => poll_board(app).await,
         _ => {}
     }
 }
@@ -145,7 +147,7 @@ fn status_error(code: u16, unauthorised_hint: &str) -> String {
 
 async fn poll_stripe(app: AppHandle) {
     let Some(key) = secrets::get("stripe-api-key") else { return };
-    let auth = format!("Basic {}", crate::claude::base64_for(format!("{key}:").as_bytes()));
+    let auth = format!("Basic {}", crate::opencode::base64_for(format!("{key}:").as_bytes()));
     let http = client();
 
     let balance = http
@@ -272,7 +274,7 @@ async fn poll_github(app: AppHandle) {
         .get("https://api.github.com/user")
         .header("Authorization", format!("Bearer {token}"))
         .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "Coucou")
+        .header("User-Agent", "Boo")
         .send()
         .await;
     let Ok(response) = user else { return };
@@ -297,7 +299,7 @@ async fn poll_github(app: AppHandle) {
         .get("https://api.github.com/user/repos?per_page=100&affiliation=owner&sort=pushed")
         .header("Authorization", format!("Bearer {token}"))
         .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "Coucou")
+        .header("User-Agent", "Boo")
         .send()
         .await;
     let stars: i64 = match repos {
@@ -603,6 +605,41 @@ async fn poll_calcom(app: AppHandle) {
         error: None,
         event: None,
     });
+}
+
+// ── Video board ───────────────────────────────────────────────────────────────
+
+/// Reads the board's own JSON files (see board.rs): no network, no Python, and
+/// nothing is ever written back.
+async fn poll_board(app: AppHandle) {
+    let dir = {
+        let Some(shared) = app.try_state::<crate::Shared>() else { return };
+        let dir = shared.settings.lock().unwrap().board_dir.clone();
+        crate::board::dir_from(&dir)
+    };
+    let up = crate::board::board_up().await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    // A few small files: cheap, but kept off the async threads all the same.
+    let read = tauri::async_runtime::spawn_blocking(move || crate::board::read(&dir, now, up)).await;
+    let data = match read {
+        Ok(Ok(data)) => data,
+        Ok(Err(error)) => {
+            emit(&app, IntegrationUpdate { id: "integration_board", data: json!({}), error: Some(error), event: None });
+            return;
+        }
+        Err(_) => return,
+    };
+
+    // The badge and sound fire when a film actually goes out, once.
+    let event = data.get("lastPosted").and_then(|p| {
+        let title = p.get("title")?.as_str()?;
+        let key = format!("{title}|{}", p.get("date")?.as_str()?);
+        is_new("board", &key).then(|| IntegrationEvent { success: true, label: format!("Posted: {title}"), detail: None })
+    });
+    emit(&app, IntegrationUpdate { id: "integration_board", data, error: None, event });
 }
 
 // ── n8n ───────────────────────────────────────────────────────────────────────

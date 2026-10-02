@@ -324,6 +324,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "boo"
+version = "0.1.1"
+dependencies = [
+ "gtk",
+ "keyring",
+ "libc",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-single-instance",
+ "tokio",
+ "windows 0.61.3",
+]
+
+[[package]]
+name = "boo-hook"
+version = "0.1.1"
+dependencies = [
+ "libc",
+ "serde_json",
+ "windows 0.61.3",
+]
+
+[[package]]
 name = "brotli"
 version = "9.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -606,33 +633,6 @@ dependencies = [
  "bitflags 2.13.2",
  "core-foundation",
  "libc",
-]
-
-[[package]]
-name = "coucou"
-version = "0.1.1"
-dependencies = [
- "gtk",
- "keyring",
- "libc",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-single-instance",
- "tokio",
- "windows 0.61.3",
-]
-
-[[package]]
-name = "coucou-hook"
-version = "0.1.1"
-dependencies = [
- "libc",
- "serde_json",
- "windows 0.61.3",
 ]
 
 [[package]]

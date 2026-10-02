@@ -15,7 +15,7 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T |
   try {
     return await invoke<T>(cmd, args);
   } catch (err) {
-    console.error(`[coucou] ${cmd} failed`, err);
+    console.error(`[boo] ${cmd} failed`, err);
     return null;
   }
 }
@@ -32,6 +32,8 @@ export interface BootInfo {
 
 export const Bridge = {
   boot: () => call<BootInfo>("boot"),
+
+  glassSnapshot: () => call<{ dataUrl: string; width: number; height: number }>("glass_snapshot"),
 
   saveSettings: (settings: Settings) => call<void>("save_settings", { settings }),
 
@@ -54,12 +56,13 @@ export const Bridge = {
 
   /** "Open terminal" → opens the folder in VS Code when `code` is on PATH. */
   openInVSCode: (path: string | null) => call<boolean>("open_in_vscode", { path }),
+  focusAgent: (pids: number[], path: string | null) => call<boolean>("focus_agent", { pids, path }),
 
   quit: () => call<void>("quit_app"),
 
   openSettingsWindow: () => call<void>("open_settings_window"),
 
-  /** Writes to %LOCALAPPDATA%\Coucou\coucou.log, next to the Rust lines. */
+  /** Writes to %LOCALAPPDATA%\Boo\boo.log, next to the Rust lines. */
   log: (message: string) => call<void>("log_line", { message }),
 
   // ── Claude Code hooks ─────────────────────────────────────────────────────
@@ -73,6 +76,16 @@ export const Bridge = {
   hooksApply: (install: boolean, fingerprint: string) =>
     callOrThrow<string>("hooks_apply", { install, fingerprint }),
 
+  // ── OpenCode, Codex CLI, jcode ────────────────────────────────────────────
+  agentsStatus: () => call<AgentStatus[]>("agents_status"),
+  /** Diff to show before anything is written. `install: false` previews removal. */
+  agentsPreview: (id: string, install: boolean) =>
+    callOrThrow<AgentPreview>("agents_preview", { id, install }),
+  /** Writes the agent's config — only ever after an explicit click, and only
+   *  when the file still matches the preview the user looked at. */
+  agentsApply: (id: string, install: boolean, fingerprint: string) =>
+    callOrThrow<string>("agents_apply", { id, install, fingerprint }),
+
   approvalDecision: (requestId: string, decision: "allow" | "deny") =>
     call<void>("approval_decision", { requestId, decision }),
   /** "The card is up" — until this lands the relay only waits a moment. */
@@ -85,6 +98,8 @@ export const Bridge = {
   chatSend: (query: string, context: ChatContext | null) =>
     callOrThrow<{ text: string }>("chat_send", { query, context }),
   chatReset: () => call<void>("chat_reset"),
+  /** True when the OpenCode login file holds a key, so chat works without a saved one. */
+  chatLoginAvailable: () => call<boolean>("chat_login_available"),
   /** Copies a dropped file into the inbox. */
   ingestFile: (path: string) => callOrThrow<DroppedFile>("ingest_file", { path }),
   /** Only ever tells you whether a key exists — never its value. */
@@ -96,6 +111,8 @@ export const Bridge = {
   refreshIntegration: (id: string) => call<void>("refresh_integration", { id }),
   /** Opens the configured n8n instance in the browser. */
   openN8n: () => call<void>("open_n8n"),
+  /** The video board's local page when it runs, its folder otherwise. */
+  openBoard: () => call<void>("open_board"),
 
   /** Tray → Pause. Stops the integration pollers, not just the island. */
   setPaused: (paused: boolean) => call<void>("set_paused", { paused }),
@@ -133,9 +150,31 @@ export interface HookPreview {
   fingerprint: string;
 }
 
+export interface AgentStatus {
+  id: string;
+  label: string;
+  installed: boolean;
+  /** The agent's own config folder exists on this PC. */
+  available: boolean;
+  configPath: string;
+  hookReady: boolean;
+  /** Allow / Deny from the island can answer this agent. */
+  approvals: boolean;
+  summary: string;
+}
+
+export interface AgentPreview {
+  diff: string;
+  /** Empty when there is nothing to back up yet. */
+  backup: string;
+  configPath: string;
+  fingerprint: string;
+  notes: string[];
+}
+
 /** Same as `call`, but surfaces the error so the UI can show what went wrong. */
 async function callOrThrow<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  if (!IS_TAURI) throw new Error("not running inside Coucou");
+  if (!IS_TAURI) throw new Error("not running inside Boo");
   return invoke<T>(cmd, args);
 }
 

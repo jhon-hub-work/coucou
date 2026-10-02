@@ -1,8 +1,9 @@
-// The launch "coucou" — port of GreetingCanvasView.swift.
+// The launch "boo" — port of GreetingCanvasView.swift.
 // Everything is laid out in the same 640×150 reference space as on macOS.
 
 import { Sound } from "../core/sound";
 import { COMPACT_W, NOTCH_H, NOTCH_W } from "../core/layout";
+import { ghostPath, HEM_SLOW } from "./ghost";
 
 // ── Timing (mirrors greeting-v2.html `T`) ─────────────────────────────────────
 
@@ -35,7 +36,7 @@ export const GREETING_END = T.end;
 
 const C0 = { x: 320, y: 90 };
 const HB = 58;
-const ASP = 1.34;
+const ASP = 0.98;
 const EAR_X = 40;
 const EAR_Y = 16;
 const EAR_HB = 17;
@@ -248,21 +249,9 @@ function rr(x: CanvasRenderingContext2D, X: number, Y: number, W: number, H: num
   x.closePath();
 }
 
-function mochiPath(hw: number, hh: number): Path2D {
-  const n = 3.2;
-  const p = new Path2D();
-  const steps = 96;
-  for (let i = 0; i <= steps; i++) {
-    const a = (i / steps) * 2 * Math.PI;
-    const ca = Math.cos(a);
-    const sa = Math.sin(a);
-    const px = hw * (ca < 0 ? -1 : 1) * Math.pow(Math.abs(ca), 2 / n);
-    const py = hh * (sa < 0 ? -1 : 1) * Math.pow(Math.abs(sa), 2 / n);
-    if (i === 0) p.moveTo(px, py);
-    else p.lineTo(px, py);
-  }
-  p.closePath();
-  return p;
+/** Ghost body, hem wiggling with wall time. `hw`/`hh` are half width / half height. */
+function booPath(hw: number, hh: number, scallops = 4): Path2D {
+  return ghostPath(hw, hh, scallops, (performance.now() / 1000) * HEM_SLOW);
 }
 
 function whiteFill(
@@ -270,8 +259,8 @@ function whiteFill(
   x0: number, y0: number, x1: number, y1: number,
 ) {
   const g = x.createLinearGradient(x0, y0, x1, y1);
-  g.addColorStop(0, "rgb(251,251,252)");
-  g.addColorStop(1, "rgb(231,233,236)");
+  g.addColorStop(0, "rgb(250,250,255)");
+  g.addColorStop(1, "rgb(225,228,245)");
   x.save();
   x.fillStyle = g;
   x.fill(path);
@@ -284,7 +273,7 @@ function drawHandL(x: CanvasRenderingContext2D, hw: number, hh: number, p: Pose)
   const hb = hh * 2;
   const r = hb * 0.15 * k;
   const rx = lerp(-hw * 0.35, -hw - hb * 0.22, k);
-  let ry = lerp(hh * 0.85, hh * 0.62, k);
+  let ry = lerp(hh * 0.5, hh * 0.3, k);
   if (p.wave >= 0) ry += Math.sin(p.wave * 6) * hb * 0.02;
   x.save();
   x.translate(rx, ry);
@@ -304,7 +293,7 @@ function drawHandR(x: CanvasRenderingContext2D, hw: number, hh: number, p: Pose)
   const L = hb * 0.4 * k;
   const T2 = hb * 0.22 * k;
   let rx = lerp(hw * 0.35, hw + hb * 0.2, k);
-  let ry = lerp(hh * 0.85, hh * 0.2, k);
+  let ry = lerp(hh * 0.5, hh * 0.05, k);
   let ang = -0.61;
   if (p.wave >= 0) {
     const w = p.wave * 2 * Math.PI * 2.5;
@@ -316,8 +305,8 @@ function drawHandR(x: CanvasRenderingContext2D, hw: number, hh: number, p: Pose)
   x.translate(rx, ry);
   x.rotate(ang);
   const g = x.createLinearGradient(L / 2, -T2 / 2, -L / 2, T2 / 2);
-  g.addColorStop(0, "rgb(251,251,252)");
-  g.addColorStop(1, "rgb(231,233,236)");
+  g.addColorStop(0, "rgb(250,250,255)");
+  g.addColorStop(1, "rgb(225,228,245)");
   rr(x, -L / 2, -T2 / 2, L, T2, T2 / 2);
   x.fillStyle = g;
   x.fill();
@@ -327,7 +316,7 @@ function drawHandR(x: CanvasRenderingContext2D, hw: number, hh: number, p: Pose)
   x.restore();
 }
 
-function drawMochi(x: CanvasRenderingContext2D, p: Pose) {
+function drawBoo(x: CanvasRenderingContext2D, p: Pose) {
   const hh = p.hb / 2;
   const hw = hh * ASP;
   if (hh <= 0.4) return;
@@ -357,7 +346,7 @@ function drawMochi(x: CanvasRenderingContext2D, p: Pose) {
   drawHandL(x, hw, hh, p);
   drawHandR(x, hw, hh, p);
 
-  const body = mochiPath(hw, hh);
+  const body = booPath(hw, hh);
   whiteFill(x, body, hw * 0.6, -hh, -hw * 0.6, hh);
 
   if (p.tint > 0) {
@@ -377,9 +366,9 @@ function drawMochi(x: CanvasRenderingContext2D, p: Pose) {
   x.fillStyle = "#16171A";
   x.strokeStyle = "#16171A";
   const er = p.hb * 0.06;
-  const sp = p.hb * 0.19;
+  const sp = p.hb * 0.15;
   const lx = p.lookX * hw * 0.42;
-  const ly = p.lookY * hh * 0.28 + hh * 0.12 + p.eyeRoll * hh * 1.25;
+  const ly = p.lookY * hh * 0.28 + hh * 0.2 + p.eyeRoll * hh * 1.25;
   for (const sd of [-1, 1]) {
     x.save();
     x.translate(sd * sp + lx, ly);
@@ -398,10 +387,16 @@ function drawMochi(x: CanvasRenderingContext2D, p: Pose) {
     } else {
       x.scale(1, Math.max(0.12, p.open));
       x.beginPath();
-      x.arc(0, 0, er, 0, Math.PI * 2);
+      x.ellipse(0, 0, er * 0.85, er * 1.5, 0, 0, Math.PI * 2);
       x.fill();
     }
     x.restore();
+  }
+  if (p.eye === "dot") {
+    // small round "o" mouth
+    x.beginPath();
+    x.ellipse(lx, ly + er * 2.9, er * 0.6, er * 0.75, 0, 0, Math.PI * 2);
+    x.fill();
   }
   x.restore();
 
@@ -473,7 +468,7 @@ function drawMinis(x: CanvasRenderingContext2D, alpha: number) {
     x.translate(cx + dx, cy + dy);
     x.scale(alpha, alpha);
     x.fillStyle = MINI_COLORS[i];
-    x.fill(mochiPath(5.3, 4));
+    x.fill(booPath(4.6, 5, 3));
     x.restore();
   });
 }
@@ -561,6 +556,6 @@ export class Greeting {
     }
 
     drawMinis(x, p.minis);
-    drawMochi(x, p);
+    drawBoo(x, p);
   }
 }

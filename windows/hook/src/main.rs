@@ -1,20 +1,20 @@
-//! coucou-hook — the relay Claude Code runs on every hook event.
+//! boo-hook — the relay Claude Code runs on every hook event.
 //!
 //! Reads the hook JSON on stdin, adds a little terminal context, and hands it to
-//! Coucou over the named pipe `\\.\pipe\coucou-<sid>` (Windows) or the Unix
-//! socket `$XDG_RUNTIME_DIR/coucou.sock` (Linux).
+//! Boo over the named pipe `\\.\pipe\boo-<sid>` (Windows) or the Unix
+//! socket `$XDG_RUNTIME_DIR/boo.sock` (Linux).
 //!
 //! Hard rule (docs/CLAUDE.md): **never block Claude Code.**
-//! * If the pipe does not exist — Coucou is closed — we exit 0 immediately with
+//! * If the pipe does not exist — Boo is closed — we exit 0 immediately with
 //!   nothing on stdout, and the session carries on untouched.
 //! * Every step runs under a deadline enforced by the main thread, so a pipe that
 //!   accepts the connection and then stops reading cannot wedge the session
 //!   either: we abandon the worker and exit.
 //! * Only `PermissionRequest` waits for an answer, because approving from the
 //!   island is the whole point. No answer means empty stdout, and Claude Code
-//!   asks in the terminal exactly as if Coucou were not installed.
+//!   asks in the terminal exactly as if Boo were not installed.
 //!
-//! Usage: `coucou-hook <EventName>` (the name is also read from the JSON).
+//! Usage: `boo-hook [--agent <name>] <EventName>` (the name is also read from the JSON).
 
 use std::io::{Read, Write};
 use std::sync::mpsc;
@@ -78,7 +78,7 @@ fn decision_json(decision: &str) -> Option<String> {
         // "always" still answers a plain allow; remembering it is the island's
         // business, not Claude Code's.
         "allow" | "always" => r#"{"behavior":"allow"}"#.to_string(),
-        "deny" => r#"{"behavior":"deny","message":"Denied from Coucou"}"#.to_string(),
+        "deny" => r#"{"behavior":"deny","message":"Denied from Boo"}"#.to_string(),
         _ => return None,
     };
     Some(format!(
@@ -86,39 +86,81 @@ fn decision_json(decision: &str) -> Option<String> {
     ))
 }
 
-/// Reads stdin and returns the payload to forward plus the event name.
-fn read_event() -> Option<(String, String)> {
-    let mut raw = Vec::new();
-    if std::io::stdin().read_to_end(&mut raw).is_err() || raw.is_empty() {
-        return None;
-    }
-    // Some shells hand us a UTF-8 BOM; serde_json would choke on it.
-    if raw.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        raw.drain(..3);
-    }
-
-    let mut payload = serde_json::from_slice::<serde_json::Value>(&raw).ok()?;
-    let map = payload.as_object_mut()?;
-
-    // Parse argv: "coucou-hook.exe [--agent <name>] [<EventName>]"
-    // --agent tags the payload with coucou_agent so the app routes to the right pill.
-    // Absent or invalid names are validated and discarded by the app, not here.
+/// `boo-hook.exe [--agent <name>] [<EventName>]`
+fn parse_args() -> (String, String) {
     let mut agent = String::new();
     let mut arg_event = String::new();
-    {
-        let mut it = std::env::args().skip(1);
-        while let Some(arg) = it.next() {
-            if arg == "--agent" {
-                agent = it.next().unwrap_or_default();
-            } else if arg_event.is_empty() {
-                arg_event = arg;
-            }
+    let mut it = std::env::args().skip(1);
+    while let Some(arg) = it.next() {
+        if arg == "--agent" {
+            agent = it.next().unwrap_or_default();
+        } else if arg_event.is_empty() {
+            arg_event = arg;
         }
     }
+    (agent, arg_event)
+}
+
+/// jcode does not pipe a JSON document: its hooks describe the event in
+/// `JCODE_HOOK_*` environment variables (docs/HOOKS.md). Translate them into the
+/// Claude-Code-shaped object the island already understands. stdin is never read
+/// here: an observer hook may inherit a console, and waiting on it would stall
+/// jcode's own `pre_tool` gate for its whole timeout.
+fn jcode_payload(event: &str, env: &dyn Fn(&str) -> String) -> serde_json::Value {
+    use serde_json::{json, Value};
+    let failed = env("JCODE_HOOK_STATUS") == "error";
+    let event = match (event, failed) {
+        ("Stop", true) => "StopFailure",
+        ("PostToolUse", true) => "PostToolUseFailure",
+        (e, _) => e,
+    };
+    let mut map = serde_json::Map::new();
+    map.insert("session_id".into(), json!(env("JCODE_HOOK_SESSION_ID")));
+    map.insert("cwd".into(), json!(env("JCODE_HOOK_CWD")));
+    map.insert("hook_event_name".into(), json!(event));
+    let tool = env("JCODE_HOOK_TOOL_NAME");
+    if !tool.is_empty() {
+        // jcode names tools in lower case (`bash`, `edit`); the island's labels
+        // are keyed the Claude Code way.
+        let mut chars = tool.chars();
+        let name: String = chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default();
+        map.insert("tool_name".into(), json!(name));
+        if let Ok(input @ Value::Object(_)) = serde_json::from_str::<Value>(&env("JCODE_HOOK_TOOL_INPUT")) {
+            map.insert("tool_input".into(), input);
+        }
+    }
+    let text = if failed { env("JCODE_HOOK_ERROR") } else { env("JCODE_HOOK_LAST_ASSISTANT_TEXT") };
+    if !text.is_empty() {
+        map.insert("message".into(), json!(text));
+    }
+    Value::Object(map)
+}
+
+/// Reads stdin and returns the payload to forward plus the event name.
+fn read_event() -> Option<(String, String)> {
+    // --agent tags the payload with boo_agent so the app routes to the right pill.
+    // Absent or invalid names are validated and discarded by the app, not here.
+    let (agent, arg_event) = parse_args();
+
+    let mut payload = if agent == "jcode" {
+        jcode_payload(&arg_event, &|k| std::env::var(k).unwrap_or_default())
+    } else {
+        let mut raw = Vec::new();
+        if std::io::stdin().read_to_end(&mut raw).is_err() || raw.is_empty() {
+            return None;
+        }
+        // Some shells hand us a UTF-8 BOM; serde_json would choke on it.
+        if raw.starts_with(&[0xEF, 0xBB, 0xBF]) {
+            raw.drain(..3);
+        }
+        serde_json::from_slice::<serde_json::Value>(&raw).ok()?
+    };
+    let map = payload.as_object_mut()?;
+
     // Which agent this hook was installed for. Absent means Claude Code,
     // so existing hook commands keep working unchanged.
     if !agent.is_empty() {
-        map.insert("coucou_agent".into(), serde_json::Value::String(agent));
+        map.insert("boo_agent".into(), serde_json::Value::String(agent));
     }
     let event = map
         .get("hook_event_name")
@@ -146,7 +188,7 @@ fn read_event() -> Option<(String, String)> {
         }
     }
 
-    // Which terminal the session runs in. Unlike macOS, Coucou here accepts
+    // Which terminal the session runs in. Unlike macOS, Boo here accepts
     // events from every terminal, so this is context only — never a filter.
     for (key, var) in [
         ("term_program", "TERM_PROGRAM"),
@@ -160,6 +202,10 @@ fn read_event() -> Option<(String, String)> {
             map.insert(key.into(), serde_json::Value::String(value));
         }
     }
+
+    // Where the agent's window lives — read by Boo's ↗ "Show window" button.
+    #[cfg(windows)]
+    map.insert("ancestor_pids".into(), serde_json::json!(win::ancestor_pids()));
 
     truncate_strings(&mut payload);
 
@@ -231,7 +277,7 @@ mod tests {
         );
         assert_eq!(
             decision_json("deny").unwrap(),
-            r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied from Coucou"}}}"#
+            r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied from Boo"}}}"#
         );
         // "always" is an island concept; Claude Code just gets an allow.
         assert!(decision_json("always").unwrap().contains(r#""behavior":"allow""#));
@@ -243,6 +289,37 @@ mod tests {
         assert!(decision_json("maybe").is_none());
         // The shape the app used to send must not be mistaken for a decision.
         assert!(decision_json(r#"{"permissionDecision":"allow"}"#).is_none());
+    }
+
+    #[test]
+    fn jcode_env_becomes_a_claude_shaped_payload() {
+        let env = |k: &str| match k {
+            "JCODE_HOOK_SESSION_ID" => "ses_1".to_string(),
+            "JCODE_HOOK_CWD" => "D:/proj".to_string(),
+            "JCODE_HOOK_TOOL_NAME" => "bash".to_string(),
+            "JCODE_HOOK_TOOL_INPUT" => r#"{"command":"ls"}"#.to_string(),
+            "JCODE_HOOK_STATUS" => "ok".to_string(),
+            "JCODE_HOOK_LAST_ASSISTANT_TEXT" => "done".to_string(),
+            _ => String::new(),
+        };
+        let p = jcode_payload("PreToolUse", &env);
+        assert_eq!(p["hook_event_name"], "PreToolUse");
+        assert_eq!(p["session_id"], "ses_1");
+        assert_eq!(p["tool_name"], "Bash");
+        assert_eq!(p["tool_input"]["command"], "ls");
+        assert_eq!(jcode_payload("Stop", &env)["message"], "done");
+    }
+
+    #[test]
+    fn a_failed_jcode_turn_or_tool_is_reported_as_a_failure() {
+        let env = |k: &str| match k {
+            "JCODE_HOOK_STATUS" => "error".to_string(),
+            "JCODE_HOOK_ERROR" => "boom".to_string(),
+            _ => String::new(),
+        };
+        assert_eq!(jcode_payload("Stop", &env)["hook_event_name"], "StopFailure");
+        assert_eq!(jcode_payload("PostToolUse", &env)["hook_event_name"], "PostToolUseFailure");
+        assert_eq!(jcode_payload("SessionEnd", &env)["hook_event_name"], "SessionEnd");
     }
 
     #[test]

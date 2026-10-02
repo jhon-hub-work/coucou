@@ -7,8 +7,8 @@
       "rpm"
     ],
     "resources": {
-      "../target/release/coucou-hook.exe": null,
-      "../target/release/coucou-hook": "coucou-hook"
+      "../target/release/boo-hook.exe": null,
+      "../target/release/boo-hook": "boo-hook"
     },
     "linux": {
       "appimage": {
@@ -30,7 +30,7 @@
     "windows": [
       {
         "label": "island",
-        "title": "Coucou",
+        "title": "Boo",
         "url": "index.html",
         "width": 240,
         "height": 6,

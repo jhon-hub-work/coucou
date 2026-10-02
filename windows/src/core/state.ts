@@ -1,7 +1,7 @@
 // App state — mirror of AppState.swift (the parts the island needs).
 
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
-import type { EyeShape } from "../mochi/engine";
+import type { EyeShape } from "../boo/engine";
 
 export type AgentSource = "claudeCode" | "n8n" | "agent";
 export type PillBadge = "approval" | "finished" | "error";
@@ -19,9 +19,13 @@ export interface AgentTask {
   miniEye?: EyeShape | null;
   pillBadge?: PillBadge | null;
   sessionCwd?: string | null;
+  /** The relay's ancestor PIDs: where the agent's window lives (↗ "Show window"). */
+  windowPids?: number[];
 }
 
 export interface ApprovalInfo {
+  /** The pill the request came from; Claude Code's when absent. */
+  agentId?: string;
   requestId: string;
   sessionId: string;
   tool: string;
@@ -58,7 +62,8 @@ const task = (
 
 /** AgentTask.integrationAgents — same ids, names and colours as macOS. */
 export const INTEGRATION_AGENTS: AgentTask[] = [
-  task("integration_claude", "VS Code", "#F5F6F8", "claudeCode"),
+  task("integration_claude", "Claude Code", "#F5F6F8", "claudeCode"),
+  task("integration_board", "Board", "#4FD1C5", "n8n"),
   task("integration_resend", "Resend", "#22C55E", "n8n"),
   task("integration_n8n", "n8n", "#F29B38", "n8n"),
   task("integration_vercel", "Vercel", "#7C5CFF", "n8n"),
@@ -70,7 +75,7 @@ export const INTEGRATION_AGENTS: AgentTask[] = [
 
 export const TOGGLEABLE_INTEGRATION_IDS = [
   "integration_resend", "integration_n8n", "integration_vercel", "integration_github",
-  "integration_notion", "integration_calcom", "integration_stripe",
+  "integration_notion", "integration_calcom", "integration_stripe", "integration_board",
 ];
 
 /** What an integration poller last reported. */
@@ -82,6 +87,7 @@ export interface IntegrationInfo {
 }
 
 export interface Settings {
+  glass: "clear" | "tinted";
   soundEnabled: boolean;
   soundVolume: number;
   autoCloseInterval: number;
@@ -90,22 +96,26 @@ export interface Settings {
   screen: "primary" | "cursor";
   autostart: boolean;
   hooksInstalled: boolean;
-  /** Claude model used by the chat. */
+  /** OpenCode Go model used by the chat. */
   model: string;
+  /** Folder of the video publishing board read by the Board pill. */
+  boardDir: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
+  glass: "clear",
   soundEnabled: true,
   soundVolume: 0.12,
   autoCloseInterval: 15,
   absenceInterval: 180,
   activeIntegrations: [
-    "integration_resend", "integration_n8n", "integration_vercel", "integration_github",
+    "integration_board", "integration_resend", "integration_n8n", "integration_vercel", "integration_github",
   ],
   screen: "primary",
   autostart: false,
   hooksInstalled: false,
-  model: "claude-opus-5",
+  model: "deepseek-v4-flash",
+  boardDir: "D:\\Work\\Claude\\videos\\_publish",
 };
 
 type Listener = () => void;

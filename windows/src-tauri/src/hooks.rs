@@ -3,7 +3,7 @@
 // The rule from CLAUDE.md is strict and is followed to the letter:
 // read %USERPROFILE%\.claude\settings.json, take a dated backup, merge without
 // touching anybody else's hooks, show the diff, and write only after an explicit
-// click. Uninstall removes Coucou's entries and nothing else.
+// click. Uninstall removes Boo's entries and nothing else.
 //
 // The command is only the quoted exe path in forward slashes plus the event name:
 // on Windows Claude Code runs hook commands through Git Bash, and anything with
@@ -33,8 +33,8 @@ pub const HOOK_EVENTS: &[(&str, u64)] = &[
     ("SubagentStop", 10),
 ];
 
-/// Marker that identifies a Coucou entry inside settings.json.
-const MARKER: &str = "coucou-hook";
+/// Marker that identifies a Boo entry inside settings.json.
+pub(crate) const MARKER: &str = "boo-hook";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,7 +79,7 @@ fn read_settings() -> Result<Value, String> {
 
 /// The parsing half of `read_settings`, split out so it can be tested without a
 /// home directory.
-fn parse_settings(bytes: &[u8], path: &str) -> Result<Value, String> {
+pub(crate) fn parse_settings(bytes: &[u8], path: &str) -> Result<Value, String> {
     // PowerShell writes a UTF-8 BOM with `Set-Content -Encoding utf8`, and
     // serde_json refuses it. Stripping it is safe and well defined; guessing at
     // anything else is not.
@@ -89,9 +89,9 @@ fn parse_settings(bytes: &[u8], path: &str) -> Result<Value, String> {
     }
     match serde_json::from_slice::<Value>(text) {
         Ok(v) if v.is_object() => Ok(v),
-        Ok(_) => Err(format!("{path} isn't a JSON object — Coucou won't touch it.")),
+        Ok(_) => Err(format!("{path} isn't a JSON object — Boo won't touch it.")),
         Err(err) => Err(format!(
-            "{path} isn't valid JSON ({err}). Fix or move it, then try again — Coucou won't overwrite it."
+            "{path} isn't valid JSON ({err}). Fix or move it, then try again — Boo won't overwrite it."
         )),
     }
 }
@@ -124,7 +124,7 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-fn entry_is_ours(entry: &Value) -> bool {
+pub(crate) fn entry_is_ours(entry: &Value) -> bool {
     entry
         .get("hooks")
         .and_then(Value::as_array)
@@ -139,7 +139,7 @@ fn entry_is_ours(entry: &Value) -> bool {
         .unwrap_or(false)
 }
 
-/// Settings with Coucou's hooks added; everything else is left untouched.
+/// Settings with Boo's hooks added; everything else is left untouched.
 fn merged(existing: &Value) -> Value {
     let mut root = existing.as_object().cloned().unwrap_or_default();
     let mut hooks = root
@@ -169,7 +169,7 @@ fn merged(existing: &Value) -> Value {
     Value::Object(root)
 }
 
-/// Settings with every Coucou entry removed, and nothing else changed.
+/// Settings with every Boo entry removed, and nothing else changed.
 fn without_ours(existing: &Value) -> Value {
     let mut root = existing.as_object().cloned().unwrap_or_default();
     let Some(hooks) = root.get("hooks").and_then(Value::as_object).cloned() else {
@@ -198,13 +198,13 @@ fn without_ours(existing: &Value) -> Value {
     Value::Object(root)
 }
 
-fn pretty(v: &Value) -> String {
+pub(crate) fn pretty(v: &Value) -> String {
     serde_json::to_string_pretty(v).unwrap_or_default()
 }
 
 /// Down to the second: installing then uninstalling in the same minute must not
 /// quietly overwrite the first backup.
-fn stamp() -> String {
+pub(crate) fn stamp() -> String {
     let t = platform::local_time();
     format!(
         "{:04}{:02}{:02}-{:02}{:02}{:02}",
@@ -219,7 +219,7 @@ fn backup_path() -> PathBuf {
 
 /// Identifies the exact bytes a preview was computed from. FNV-1a is plenty:
 /// the question is only "is this still the file I showed the user?".
-fn fingerprint(bytes: &[u8]) -> String {
+pub(crate) fn fingerprint(bytes: &[u8]) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for b in bytes {
         hash ^= *b as u64;
@@ -307,7 +307,7 @@ pub fn write(install: bool, fingerprint: &str) -> Result<String, String> {
 
     // Write beside the target and rename over it: a crash or a full disk leaves
     // the original settings.json intact rather than half a file.
-    let temp = path.with_extension(format!("json.coucou-{}", std::process::id()));
+    let temp = path.with_extension(format!("json.boo-{}", std::process::id()));
     if let Err(err) = write_like(&temp, &path, text.as_bytes()) {
         let _ = std::fs::remove_file(&temp);
         return Err(format!("write failed: {err}"));
@@ -324,7 +324,7 @@ pub fn write(install: bool, fingerprint: &str) -> Result<String, String> {
 /// On Linux a fresh file would get the umask's 0644, and settings.json can hold
 /// API keys in its `env` block: the new file is created readable by us only,
 /// then given the original's permissions, so the rename never widens them.
-fn write_like(temp: &Path, original: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_like(temp: &Path, original: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
@@ -345,7 +345,7 @@ fn write_like(temp: &Path, original: &Path, bytes: &[u8]) -> std::io::Result<()>
     Ok(())
 }
 
-/// Copies the relay (coucou-hook.exe / coucou-hook) into the local data dir's
+/// Copies the relay (boo-hook.exe / boo-hook) into the local data dir's
 /// bin/ on launch. In a bundled install it comes from the app resources; in
 /// `tauri dev` it sits next to the app binary in the workspace target directory.
 ///
@@ -432,7 +432,7 @@ fn install_relay(src: &Path, dest: &Path) {
 // ── Minimal unified diff (LCS) ────────────────────────────────────────────────
 
 /// settings.json is short, so a plain O(n·m) LCS is the simplest honest diff.
-fn unified_diff(before: &str, after: &str) -> String {
+pub(crate) fn unified_diff(before: &str, after: &str) -> String {
     let a: Vec<&str> = before.lines().collect();
     let b: Vec<&str> = after.lines().collect();
     let (n, m) = (a.len(), b.len());
@@ -523,7 +523,7 @@ mod tests {
     #[test]
     fn unreadable_content_is_an_error_never_an_empty_object() {
         // This is the whole bug: returning {} here meant `merged()` produced a
-        // file containing nothing but Coucou's hooks, and the write replaced
+        // file containing nothing but Boo's hooks, and the write replaced
         // everything the user had.
         for bad in [&b"{ not json"[..], &b"[1,2,3]"[..], &b"\"a string\""[..]] {
             assert!(
@@ -597,7 +597,7 @@ mod tests {
     #[test]
     fn rewriting_settings_never_widens_its_permissions() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("coucou-perm-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("boo-perm-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let original = dir.join("settings.json");
@@ -625,7 +625,7 @@ mod tests {
     /// the home directory at a temp directory, and that is process-wide.
     #[test]
     fn writing_backs_up_preserves_and_refuses_a_changed_file() {
-        let tmp = std::env::temp_dir().join(format!("coucou-hooks-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("boo-hooks-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join(".claude")).unwrap();
         std::env::set_var(platform::HOME_VAR, &tmp);
@@ -641,7 +641,7 @@ mod tests {
 
         // Install.
         let plan = preview(true).expect("a BOM must not stop the preview");
-        assert!(plan.diff.contains("coucou-hook"), "the diff must show what changes");
+        assert!(plan.diff.contains("boo-hook"), "the diff must show what changes");
         let backup = write(true, &plan.fingerprint).expect("install should succeed");
 
         // The backup holds the original bytes, BOM and all.

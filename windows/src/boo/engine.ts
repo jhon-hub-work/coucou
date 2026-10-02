@@ -1,4 +1,4 @@
-// Mochi — direct port of NotchBuddy/Sources/App/BotEngine.swift to Canvas 2D.
+// Boo — direct port of NotchBuddy/Sources/App/BotEngine.swift to Canvas 2D.
 // Same constants, same tweens, same easings, same particles. The only intentional
 // difference is the `happy`/`wink` eye arc, which follows the prototype
 // (design/prototype/notch-buddy.html, the visual source of truth) — the Swift
@@ -6,6 +6,7 @@
 
 import { Ease, lerp, type EaseFn } from "../core/anim";
 import { Sound } from "../core/sound";
+import { ghostPoint, HEM_FAST, HEM_SLOW } from "./ghost";
 import type { BotEmoteName, BotStateName } from "../core/layout";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -58,14 +59,14 @@ interface Particle {
   age: number; life: number; rot: number; size: number;
 }
 
-// ── Constants (MochiConst / PISTES.mochi) ─────────────────────────────────────
+// ── Constants (BooConst / PISTES.boo) ─────────────────────────────────────
 
-const EYE_W = 0.25;
-const EYE_H = 0.27;
-const EYE_SP = 0.37;
-const EYE_P = -0.12;
-const BASE_TOP: RGB = [0.929, 0.929, 0.937]; // #EDEDEF
-const BASE_BOTTOM: RGB = [0.769, 0.773, 0.792]; // #C4C5CA
+const EYE_W = 0.2;
+const EYE_H = 0.36;
+const EYE_SP = 0.3;
+const EYE_P = -0.2;
+const BASE_TOP: RGB = [0.98, 0.98, 1]; // rgb(250,250,255)
+const BASE_BOTTOM: RGB = [0.882, 0.894, 0.961]; // rgb(225,228,245)
 const INK = "rgb(26,20,18)"; // #1A1412
 const MINI_INK = "rgb(16,19,26)"; // #10131A
 
@@ -166,7 +167,7 @@ const FONT = `system-ui, "Segoe UI Variable Text", "Segoe UI", sans-serif`;
 
 export class BotEngine {
   isMini = false;
-  /** Solid body colour for mini bots / integration pills (null = Mochi gradient). */
+  /** Solid body colour for mini bots / integration pills (null = ghost gradient). */
   bodyColor: RGB | null = null;
 
   // Animated state (BotEngine `s`)
@@ -208,6 +209,10 @@ export class BotEngine {
 
   lastTime = now();
   private t0 = now() - Math.random() * 5;
+  /** Hem wave phase (rad); advanced in update() so the speed can change smoothly. */
+  private hemPh = Math.random() * 10;
+  /** Keeps the frame loop alive so the hem keeps wiggling while idle. */
+  wiggle = true;
   private nextBlink = now() + 1.5 + Math.random() * 2;
   waveUntil = 0;
   waveStart = 0;
@@ -319,7 +324,7 @@ export class BotEngine {
     this.anim("roll", [[Math.PI * 2 * turns, durationMs, Ease.inOut]], () => { this.roll = 0; });
   }
 
-  /** Peek wave — the "coucou". Timings from BotEngine.greet(). */
+  /** Peek wave — the "boo". Timings from BotEngine.greet(). */
   greet() {
     const t = now();
     const tok = ++this.greetToken;
@@ -458,7 +463,7 @@ export class BotEngine {
       this.tweens.size > 0 ||
       this.particles.length > 0 ||
       this.cfg.bounces || this.cfg.scans || this.cfg.breathes || this.cfg.zz || this.cfg.sweat ||
-      this.isMini ||
+      this.isMini || this.wiggle ||
       Math.abs(this.tgYaw - this.yaw) > 0.002 ||
       Math.abs(this.tgPitch - this.pitch) > 0.002 ||
       Math.abs(this.tgTilt - this.tilt) > 0.002 ||
@@ -504,6 +509,9 @@ export class BotEngine {
     }
 
     const t = n - this.t0;
+    const fast = this.state === "working" || this.state === "thinking" ||
+      this.state === "searching" || this.state === "dizzy";
+    this.hemPh += dt * (fast ? HEM_FAST : this.state === "sleeping" ? HEM_SLOW * 0.5 : HEM_SLOW);
     let ty = this.lookX * 0.62;
     let tp = this.lookY * 0.5;
 
@@ -637,13 +645,13 @@ export class BotEngine {
   // ── Draw ────────────────────────────────────────────────────────────────────
 
   /**
-   * Draws hands, body, blush, eyes, mouth, badge and particles into a canvas of
+   * Draws arms, body, blush, eyes, mouth, badge and particles into a canvas of
    * `w`×`h` CSS pixels (the caller has already applied the DPR transform).
    */
   draw(x: CanvasRenderingContext2D, W: number, H: number) {
     const R = W * 0.3;
-    const rx = R * 1.14;
-    const ry = R * 0.88;
+    const rx = R * 0.98;
+    const ry = R;
     const cx = W / 2 + this.ox * R;
     const cy = H / 2 + this.particleOverhang / 2 + this.oy * R + R * 0.06;
 
@@ -665,7 +673,7 @@ export class BotEngine {
       x.fillStyle = `rgba(255,120,150,${0.5 * blushVal})`;
       for (const sd of [-1, 1]) {
         x.beginPath();
-        x.ellipse(sd * rx * 0.55 + yOffset, ry * 0.2, R * 0.17, R * 0.1, 0, 0, Math.PI * 2);
+        x.ellipse(sd * rx * 0.58 + yOffset, ry * 0.34, R * 0.17, R * 0.1, 0, 0, Math.PI * 2);
         x.fill();
       }
       x.restore();
@@ -673,6 +681,7 @@ export class BotEngine {
 
     this.drawEyes(x, body, R, rx, ry);
     if (this.morph > 0.05) this.drawMouth(x, body, R);
+    else this.drawGhostMouth(x, body, R, rx, ry);
 
     x.restore();
 
@@ -683,8 +692,8 @@ export class BotEngine {
   }
 
   private bodyPath(rx: number, ry: number, R: number): Path2D {
-    const n = 72;
-    const expN = 2.0 / 2.7;
+    const n = 120;
+    const scallops = this.isMini ? 3 : 4;
     const tw = R * 1.0;
     const th = R * 0.94;
     const tr = R * 0.42;
@@ -694,14 +703,13 @@ export class BotEngine {
       const a = (i / n) * Math.PI * 2;
       const ca = Math.cos(a);
       const sa = Math.sin(a);
-      const px0 = rx * (ca >= 0 ? Math.pow(ca, expN) : -Math.pow(-ca, expN));
-      const py0 = ry * (sa >= 0 ? Math.pow(sa, expN) : -Math.pow(-sa, expN));
-      let px = px0;
-      let py = py0;
+      const g = ghostPoint(ca, sa, rx, ry, scallops, this.hemPh);
+      let px = g.x;
+      let py = g.y;
       if (m >= 0.005) {
         const rr = rrPoint(ca, sa, tw, th, tr);
-        px = lerp(px0, rr.x, m);
-        py = lerp(py0, rr.y, m);
+        px = lerp(g.x, rr.x, m);
+        py = lerp(g.y, rr.y, m);
       }
       if (i === 0) p.moveTo(px, py);
       else p.lineTo(px, py);
@@ -717,9 +725,10 @@ export class BotEngine {
       x.fill(body);
       return;
     }
-    const g = x.createLinearGradient(rx * 0.7, -ry * 0.85, -rx * 0.8, ry * 0.9);
-    g.addColorStop(0, rgba(BASE_TOP));
-    g.addColorStop(1, rgba(BASE_BOTTOM));
+    // Soft translucent lavender-white, a little more see-through towards the hem
+    const g = x.createLinearGradient(0, -ry, 0, ry);
+    g.addColorStop(0, rgba(BASE_TOP, 0.97));
+    g.addColorStop(1, rgba(BASE_BOTTOM, 0.88));
     x.fillStyle = g;
     x.fill(body);
 
@@ -732,15 +741,16 @@ export class BotEngine {
       x.fill(body);
     }
 
+    // Faint lavender shade towards the edge, then a pale inner glow on top
     const sh = x.createRadialGradient(0, 0, R * 0.15, 0, 0, R * 1.25);
-    sh.addColorStop(0, "rgba(0,0,0,0)");
-    sh.addColorStop(0.6, "rgba(0,0,0,0)");
-    sh.addColorStop(1, "rgba(0,0,0,0.2)");
+    sh.addColorStop(0, "rgba(120,110,190,0)");
+    sh.addColorStop(0.6, "rgba(120,110,190,0)");
+    sh.addColorStop(1, "rgba(120,110,190,0.16)");
     x.fillStyle = sh;
     x.fill(body);
 
-    const hl = x.createRadialGradient(rx * 0.34, -ry * 0.46, 0, rx * 0.34, -ry * 0.46, R * 0.42);
-    hl.addColorStop(0, "rgba(255,255,255,0.55)");
+    const hl = x.createRadialGradient(-rx * 0.3, -ry * 0.5, 0, -rx * 0.3, -ry * 0.5, R * 0.5);
+    hl.addColorStop(0, "rgba(255,255,255,0.7)");
     hl.addColorStop(1, "rgba(255,255,255,0)");
     x.fillStyle = hl;
     x.fill(body);
@@ -770,7 +780,7 @@ export class BotEngine {
       const ey = -Math.sin(eyePitch) * ry + (this.morph > 0 ? ry * 0.14 * this.morph : 0);
       const fx = lerp(Math.max(0.18, Math.cos(eyeYaw)), 1, this.morph * 0.7);
       const fy = lerp(Math.max(0.18, cp), 1, this.morph * 0.7);
-      const eyeMult = this.isMini ? 1.9 : 1.0;
+      const eyeMult = this.isMini ? 1.7 : 1.0;
       const ew = R * EYE_W * this.es * eyeMult;
       const eh = R * EYE_H * this.es * eyeMult;
 
@@ -793,8 +803,10 @@ export class BotEngine {
         this.drawEyeShape(x, "pill", w * 1.16, h * 1.12, sd, ink);
         break;
       case "pill": {
+        // Ghost eye: a tall oval
         const hh = Math.max(h * this.open, w * 0.3);
-        roundRectPath(x, -w / 2, -hh / 2, w, hh, Math.min(w / 2, hh / 2));
+        x.beginPath();
+        x.ellipse(0, 0, w / 2, hh / 2, 0, 0, Math.PI * 2);
         x.fill();
         break;
       }
@@ -863,7 +875,8 @@ export class BotEngine {
       case "wink":
         if (sd < 0) {
           const hh = Math.max(h * this.open, w * 0.3);
-          roundRectPath(x, -w / 2, -hh / 2, w, hh, Math.min(w / 2, hh / 2));
+          x.beginPath();
+          x.ellipse(0, 0, w / 2, hh / 2, 0, 0, Math.PI * 2);
           x.fill();
         } else {
           x.lineWidth = w * 0.5;
@@ -889,6 +902,36 @@ export class BotEngine {
         break;
       }
     }
+  }
+
+  /** Small round "o" under the eyes (idle / working). Skipped for closed-eye shapes. */
+  private drawGhostMouth(
+    x: CanvasRenderingContext2D, body: Path2D, R: number, rx: number, ry: number,
+  ) {
+    if (this.isMini) return; // far too small to read
+    const shape: EyeShape = this.eyeOverride ?? this.cfg.eye;
+    if (shape === "happy" || shape === "closed" || shape === "spiral") return;
+
+    let eyePitch = EYE_P + this.pitch + this.roll;
+    eyePitch = (((eyePitch + Math.PI) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+    const cp = Math.cos(eyePitch);
+    if (Math.cos(this.yaw) * cp <= 0.04) return;
+
+    const mx = Math.sin(this.yaw) * cp * rx;
+    const my = -Math.sin(eyePitch) * ry + R * 0.3 * this.es;
+    const fx = Math.max(0.18, Math.cos(this.yaw));
+    const fy = Math.max(0.18, cp);
+    const big = shape === "wide" ? 1.5 : 1;
+
+    x.save();
+    x.clip(body);
+    x.translate(mx, my);
+    x.scale(fx, fy);
+    x.fillStyle = INK;
+    x.beginPath();
+    x.ellipse(0, 0, R * 0.065 * big, R * 0.085 * big, 0, 0, Math.PI * 2);
+    x.fill();
+    x.restore();
   }
 
   /** Mailbox slot: dark pill cut into the box face, with rim and lip highlights. */
@@ -931,7 +974,7 @@ export class BotEngine {
     x.restore();
   }
 
-  /** Hands sit behind the body — drawn before it, in world coordinates. */
+  /** Two stubby ghost arms behind the body — only visible while `hands` > 0 (the wave). */
   private drawHandsBehind(
     x: CanvasRenderingContext2D,
     R: number, rx: number, ry: number, cx: number, cy: number,
@@ -940,65 +983,41 @@ export class BotEngine {
     if (R <= 14) return; // meaningless at compact/peek sizes
 
     const n = now();
-    const bodyH = 2 * ry;
-    const hew = 0.3 * ry * this.hands;
-    const heh = 0.26 * ry * this.hands;
-    const hwB = rx * this.sx;
-    const hhB = ry * this.sy;
     const isWaving = n >= this.waveStart && this.waveStart > 0 && n < this.waveUntil;
+    const L = R * 0.42 * this.hands;
+    const T = R * 0.21 * Math.min(1, this.hands * 1.5);
+    const fill = rgba(mix3(BASE_TOP, BASE_BOTTOM, 0.35));
+
+    x.save();
+    x.translate(cx, cy);
+    if (this.tilt !== 0) x.rotate(this.tilt);
+    x.scale(this.sx, this.sy);
 
     for (const sd of [-1, 1]) {
-      let localX: number;
-      let localY: number;
-      let handRot = 0;
-
-      if (sd > 0 && isWaving) {
+      let ang = 0.4; // hanging slightly down
+      if (isWaving) {
         const wt = n - this.waveStart;
-        const rise = Math.min(1, wt / 0.18);
-        const riseEased = 1 - Math.pow(1 - rise, 3);
-        const restX = hwB * 1.08;
-        const restY = hhB * 0.7;
-        const oscX = Math.cos(13 * wt) * 0.06 * bodyH;
-        const oscY = -Math.sin(13 * wt) * 0.14 * bodyH;
-        const waveX = hwB * 1.1 + oscX;
-        const waveY = -hhB * 0.15 + oscY;
-        localX = restX + (waveX - restX) * riseEased;
-        localY = restY + (waveY - restY) * riseEased;
-        handRot = (-0.5 + Math.sin(13 * wt) * 0.35) * riseEased;
-      } else if (sd < 0 && isWaving) {
-        const wt = n - this.waveStart;
-        localX = -hwB * 1.08;
-        localY = hhB * 0.7 + Math.sin(6 * wt) * 0.04 * bodyH;
-      } else {
-        localX = sd * hwB * 1.08;
-        localY = hhB * 0.7;
+        if (sd > 0) {
+          const rise = Math.min(1, wt / 0.18);
+          const riseEased = 1 - Math.pow(1 - rise, 3);
+          ang = lerp(0.4, -1.0 + Math.sin(13 * wt) * 0.35, riseEased);
+        } else {
+          ang = 0.45 + Math.sin(6 * wt) * 0.05;
+        }
       }
-
-      const cosT = Math.cos(this.tilt);
-      const sinT = Math.sin(this.tilt);
-      const worldX = cx + cosT * localX - sinT * localY;
-      const worldY = cy + sinT * localX + cosT * localY;
-
       x.save();
-      x.translate(worldX, worldY);
-      if (handRot !== 0) x.rotate(handRot);
-      const g = x.createLinearGradient(hew * 0.7, -heh * 0.85, -hew * 0.8, heh * 0.9);
-      if (this.bodyColor) {
-        g.addColorStop(0, rgba(mix3(this.bodyColor, [1, 1, 1], 0.35)));
-        g.addColorStop(1, rgba(this.bodyColor));
-      } else {
-        g.addColorStop(0, rgba(BASE_TOP));
-        g.addColorStop(1, rgba(BASE_BOTTOM));
-      }
-      x.beginPath();
-      x.ellipse(0, 0, hew, heh, 0, 0, Math.PI * 2);
-      x.fillStyle = g;
+      x.translate(sd * rx * 0.97, ry * 0.12);
+      x.scale(sd, 1); // mirror so one angle convention serves both sides
+      x.rotate(ang);
+      roundRectPath(x, -T / 2, -T / 2, L + T / 2, T, T / 2);
+      x.fillStyle = fill;
       x.fill();
-      x.strokeStyle = "rgba(0,0,0,0.08)";
+      x.strokeStyle = "rgba(120,110,190,0.18)";
       x.lineWidth = 1;
       x.stroke();
       x.restore();
     }
+    x.restore();
   }
 
   private drawBadge(x: CanvasRenderingContext2D, badge: Badge, R: number, cx: number, cy: number) {

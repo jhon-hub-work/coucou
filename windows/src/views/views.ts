@@ -6,8 +6,9 @@ import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { Ticker } from "./ticker";
 import { State, type AgentTask } from "../core/state";
+import { Bridge } from "../core/bridge";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
-import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
+import { createMiniBot, pruneMiniBots } from "../boo/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
@@ -214,7 +215,7 @@ function buildOverview(actions: ViewActions): ViewHost {
 
       jump.style.display = detailOpen ? "none" : "";
 
-      const others = State.otherTasks.slice(0, 4);
+      const others = State.otherTasks.slice(0, 6); // 2 columns x 3 rows: five agents + the board
       const pillKey = others.map((t) => `${t.id}:${t.pillBadge ?? ""}`).join("|");
       if (pillKey !== pillIds) {
         pillIds = pillKey;
@@ -227,7 +228,7 @@ function buildOverview(actions: ViewActions): ViewHost {
 }
 
 function buildPill(task: AgentTask, actions: ViewActions): HTMLElement {
-  const label = task.id === "integration_claude" ? "VS Code" : task.name;
+  const label = task.id === "integration_claude" ? "Claude Code" : task.name;
   const canvas = createMiniBot(task, 24);
   const pill = h(
     "div",
@@ -281,7 +282,7 @@ function buildEmpty(actions: ViewActions): ViewHost {
       h("div", { class: "sub", text: "Drop a file or window, or ask me anything." }),
     ),
     h("div", { class: "grow" }),
-    btn("Ask Claude", "primary", () => actions.setView("prompt")),
+    btn("Ask Boo", "primary", () => actions.setView("prompt")),
   );
   return { el: h("div", { class: "view" }, card(null, body)), sync() {} };
 }
@@ -298,7 +299,8 @@ function buildApproval(actions: ViewActions): ViewHost {
     el,
     sync() {
       clear(who);
-      who.append(agentWho(State.focusTask, "needs permission"));
+      const asker = State.tasks.find((t) => t.id === State.pendingApproval?.agentId);
+      who.append(agentWho(asker ?? State.focusTask, "needs permission"));
       // The whole point of approving here rather than in the terminal: this line
       // is the command, the file path or the URL being authorised, not just the
       // name of the tool asking.
@@ -332,7 +334,7 @@ function buildQuestion(): ViewHost {
       const task = State.focusTask;
       title.textContent = task?.steps.at(-1) ?? "Claude needs an answer.";
       clear(row);
-      row.append(h("div", { class: "sub", text: "Answer in your terminal — Coucou can't reply for you yet." }));
+      row.append(h("div", { class: "sub", text: "Answer in your terminal — Boo can't reply for you yet." }));
     },
   };
 }
@@ -366,7 +368,7 @@ function buildFinished(actions: ViewActions): ViewHost {
   const who = h("div");
   const title = h("div", { class: "title" });
   const row = h("div", { class: "actions" },
-    btn("Open terminal", "primary", () => actions.openTerminal()),
+    btn("Show window", "primary", () => actions.openTerminal()),
     btn("OK", "secondary", () => actions.collapse()),
   );
   const el = h("div", { class: "view" }, card("green", stack(116, 16, who, title, row)));
@@ -408,6 +410,13 @@ function buildNote(): ViewHost {
 // ── In-island settings ────────────────────────────────────────────────────────
 
 function buildSettings(actions: ViewActions): ViewHost {
+  const glassButtons = (["clear", "tinted"] as const).map((glass) =>
+    h("button", { onclick: () => {
+      State.settings.glass = glass;
+      void Bridge.saveSettings(State.settings);
+      State.notify();
+    } }, glass === "clear" ? "Clear" : "Tinted"),
+  );
   const soundSwitch = h("button", { class: "switch", onclick: () => actions.toggleSound() });
   const volume = h("input", {
     type: "range", min: "0", max: "0.2", step: "0.005",
@@ -437,6 +446,8 @@ function buildSettings(actions: ViewActions): ViewHost {
       claudeBadge,
       apiBadge,
       h("div", { class: "grow" }),
+      h("span", { text: "Glass:" }),
+      h("div", { class: "seg", role: "group", "aria-label": "Glass" }, ...glassButtons),
       h("button", {
         class: "link-btn",
         style: "color:#8e939c;font-size:11.5px",
@@ -453,6 +464,11 @@ function buildSettings(actions: ViewActions): ViewHost {
     el,
     sync() {
       const s = State.settings;
+      glassButtons.forEach((b, i) => {
+        const on = (s.glass ?? "clear") === ["clear", "tinted"][i];
+        b.classList.toggle("on", on);
+        b.setAttribute("aria-pressed", String(on));
+      });
       soundSwitch.classList.toggle("on", s.soundEnabled);
       volume.value = String(s.soundVolume);
       volume.style.opacity = s.soundEnabled ? "1" : "0.4";
@@ -503,7 +519,7 @@ export function buildViews(
   map.set("choose", buildChoose(actions));
   // Not in the Windows v1: sending a file by email, window attach + web result.
   map.set("mail", buildPlaceholder("Sending by email isn't in this version.", ""));
-  map.set("searching", buildPlaceholder("Claude is searching…", ""));
+  map.set("searching", buildPlaceholder("Boo is searching…", ""));
   map.set("result", buildPlaceholder("Result", ""));
   return map;
 }

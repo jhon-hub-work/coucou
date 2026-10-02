@@ -1,5 +1,4 @@
-/* Coucou for Windows — same palette, sizes and type scale as the macOS island.
-   Every colour below is copied from the Swift views. */
+/* Boo for Windows — glass material; geometry and type scale stay unchanged. */
 
 :root {
   color-scheme: dark;
@@ -9,15 +8,22 @@
 
   --ink: #f5f6f8;        /* primary text */
   --ink-2: #f1f2f4;
-  --dim: #9398a1;
-  --dim-2: #8e939c;
-  --dim-3: #6b7079;
-  --dim-4: #5f646d;
-  --dim-5: #4b5563;
-  --card: #141518;
-  --card-flat: #0e0f11;
-  --tab-on: #1d1f23;
-  --hairline: rgba(255, 255, 255, 0.035);
+  --dim: #d4dde8;
+  --dim-2: #e0e7f0;
+  --dim-3: #c1ccd9;
+  --dim-4: #bac6d5;
+  --dim-5: #b3c0d0;
+  --glass-tint: rgba(255, 255, 255, 0.06);
+  --card: rgba(8, 12, 18, 0.64);
+  --card-flat: rgba(8, 12, 18, 0.64);
+  --tab-on: rgba(8, 12, 18, 0.64);
+  --glass-control-wash: rgba(8, 12, 18, 0.64);
+  --hairline: rgba(235, 245, 255, 0.19);
+  --glass-rim: inset 0 1px 0 rgba(255, 255, 255, 0.60),
+    inset 0 -1px 0 rgba(218, 234, 255, 0.18),
+    inset 1px 0 0 rgba(255, 255, 255, 0.12),
+    inset -1px 0 0 rgba(255, 255, 255, 0.12),
+    inset 0 2px 5px rgba(0, 0, 0, 0.08);
   --red: #f4505e;
   --red-text: #ff8d97;
   --green: #22c55e;
@@ -69,7 +75,7 @@ body {
   position: absolute;
   top: 0;
   left: 50%;
-  background: #000;
+  background: transparent;
   border-radius: 0 0 14px 14px;
   overflow: visible;
   will-change: width, height, transform;
@@ -78,8 +84,101 @@ body {
 #island-clip {
   position: absolute;
   inset: 0;
-  overflow: hidden;
+  overflow: clip;
   border-radius: inherit;
+  isolation: isolate;
+  clip-path: inset(0 round 0 0 var(--glass-radius, 14px) var(--glass-radius, 14px));
+  background: rgba(230, 241, 255, 0.10);
+}
+
+#island[data-glass="tinted"] {
+  --glass-tint: rgba(7, 11, 18, 0.72);
+  --card: rgba(8, 12, 19, 0.72);
+  --card-flat: rgba(5, 9, 16, 0.76);
+  --glass-control-wash: rgba(8, 12, 19, 0.76);
+}
+
+/* Every material pixel, including the shadow and refracted image, is clipped. */
+#glass-background {
+  position: absolute;
+  inset: 0;
+  background-repeat: no-repeat;
+  background-size: 720px 320px;
+  background-position: center top;
+  pointer-events: none;
+  z-index: -2;
+}
+
+#glass-background canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#island-clip::before,
+#island-clip::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+#island-clip::before {
+  z-index: -1;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.16),
+    rgba(255, 255, 255, 0.015) 45%, rgba(0, 0, 0, 0.08)), var(--glass-tint);
+}
+
+#island-clip::after {
+  z-index: 3;
+  background: radial-gradient(ellipse at 3% 0, rgba(255, 255, 255, 0.38), transparent 21%),
+    radial-gradient(ellipse at 97% 0, rgba(225, 241, 255, 0.30), transparent 21%);
+  /* Restrict the corner glints to the rim, leaving text untouched. */
+  mask-image: linear-gradient(#000, #000), linear-gradient(#000, #000);
+  mask-clip: content-box, border-box;
+  mask-composite: exclude;
+  padding: 1px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    inset 0 -1px 0 rgba(231, 241, 255, 0.18),
+    inset 1px 0 0 rgba(241, 248, 255, 0.15),
+    inset -1px 0 0 rgba(241, 248, 255, 0.15);
+}
+
+#island-clip {
+  box-shadow: inset 0 0 1px rgba(235, 245, 255, 0.38),
+    inset 0 -2px 5px rgba(0, 0, 0, 0.16);
+}
+
+.card,
+.pill,
+.tab.on,
+.btn.secondary,
+.chip,
+.bubble,
+.chat-bar,
+.code,
+.drop-tags span,
+.seg button.on,
+.int-pill,
+.int-badge {
+  box-shadow: var(--glass-rim);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.15),
+    rgba(255, 255, 255, 0.02) 45%, rgba(0, 0, 0, 0.06)),
+    linear-gradient(var(--glass-control-wash), var(--glass-control-wash)), var(--glass-image, none);
+  background-size: 100% 100%, 100% 100%, var(--glass-lens-size, 720px 320px);
+  background-position: 0 0, 0 0, var(--glass-lens-position, center top);
+  background-repeat: no-repeat;
+}
+
+/* The clear shell keeps the backdrop visible; white controls carry their own wash. */
+#header {
+  background: linear-gradient(180deg, rgba(8, 12, 18, 0.64), rgba(8, 12, 18, 0.62));
+}
+
+#island[data-glass-visible="false"] #content * {
+  animation-play-state: paused;
 }
 
 #bot-canvas,
@@ -165,7 +264,7 @@ body {
   transition: opacity 0.25s ease-in-out;
 }
 
-/* A mini Mochi: the slot is the body, the canvas is larger and overflows it so
+/* A mini Boo: the slot is the body, the canvas is larger and overflows it so
    hands, badges and particles are not cut off. */
 .mini {
   position: relative;
@@ -225,7 +324,7 @@ body {
 }
 
 .tab.on {
-  background: var(--tab-on);
+  background-color: var(--tab-on);
   color: var(--ink);
 }
 
@@ -284,7 +383,7 @@ body {
   position: relative;
   height: 100%;
   border-radius: 20px;
-  background: var(--card);
+  background-color: var(--card);
   border: 1px solid var(--hairline);
   overflow: hidden;
 }
@@ -337,12 +436,12 @@ body {
 }
 
 .btn.secondary {
-  background: rgba(255, 255, 255, 0.09);
+  background-color: var(--card-flat);
   color: var(--ink-2);
 }
 
 .btn.secondary:hover {
-  background: rgba(255, 255, 255, 0.15);
+  background-color: rgba(35, 44, 57, 0.72);
 }
 
 .btn .kbd {
@@ -524,7 +623,7 @@ body {
   position: relative;
   height: 28px;
   border-radius: 999px;
-  background: var(--card-flat);
+  background-color: var(--card-flat);
   border: 1px solid rgba(255, 255, 255, 0.14);
   display: flex;
   align-items: center;
@@ -614,7 +713,7 @@ body {
 .code {
   font: 400 12px var(--mono);
   color: #e8e9ec;
-  background: rgba(255, 255, 255, 0.07);
+  background-color: var(--card-flat);
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 10px;
   padding: 5px 10px;
@@ -662,6 +761,10 @@ body {
   gap: 10px;
   font: 400 12.5px var(--font);
   color: #c5c8cd;
+}
+
+.settings-row .link-btn {
+  color: var(--dim) !important;
 }
 
 .switch {
@@ -730,7 +833,7 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 .seg button.on {
-  background: #252830;
+  background-color: var(--card-flat);
   color: var(--ink);
 }
 
@@ -770,7 +873,7 @@ input[type="range"]::-webkit-slider-thumb {
   gap: 6px;
   padding: 4px 10px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.1);
+  background-color: var(--card-flat);
   font: 400 11.5px var(--font);
   color: var(--ink-2);
   border: 1.5px solid rgba(255, 255, 255, 0.75);
@@ -812,7 +915,7 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 .bubble {
-  background: rgba(255, 255, 255, 0.13);
+  background-color: var(--card-flat);
   border-radius: 12px;
   padding: 6px 10px;
   font: 400 12.5px var(--font);
@@ -823,7 +926,7 @@ input[type="range"]::-webkit-slider-thumb {
 
 .reply {
   font: 400 12.5px var(--font);
-  color: #b0b5be;
+  color: var(--dim-2);
   white-space: pre-wrap;
   padding-right: 8px;
   user-select: text;
@@ -861,7 +964,7 @@ input[type="range"]::-webkit-slider-thumb {
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  background: rgba(255, 255, 255, 0.07);
+  background-color: var(--card-flat);
   border-radius: 12px;
 }
 
@@ -901,7 +1004,7 @@ input[type="range"]::-webkit-slider-thumb {
 /* ── Drop zone ──────────────────────────────────────────────────────────── */
 
 .drop-card {
-  background: var(--card-flat);
+  background-color: var(--card-flat);
   border: 0;
 }
 
@@ -967,7 +1070,7 @@ input[type="range"]::-webkit-slider-thumb {
   font: 400 11px var(--font);
   padding: 3px 8px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.07);
+  background-color: var(--card-flat);
   color: #b9bdc4;
 }
 
@@ -1138,7 +1241,7 @@ input[type="range"]::-webkit-slider-thumb {
 
 .int-name {
   font: 500 11px var(--font);
-  color: #9398a1;
+  color: var(--dim);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1157,7 +1260,7 @@ input[type="range"]::-webkit-slider-thumb {
 
 .int-sub {
   font: 400 10px var(--font);
-  color: #4d5159;
+  color: var(--dim-3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1344,7 +1447,7 @@ input[type="range"]::-webkit-slider-thumb {
   border: 0;
   background: transparent;
   font: 400 10px var(--mono);
-  color: #7c5cffd9;
+  color: #bcaaff;
   text-align: left;
   cursor: default;
   white-space: nowrap;

@@ -1,7 +1,10 @@
-// Coucou for Windows — app wiring and the commands the island calls.
+// Boo for Windows — app wiring and the commands the island calls.
 
-mod claude;
+mod opencode;
+mod agents;
+mod board;
 mod files;
+mod focus;
 mod hooks;
 mod integrations;
 mod island;
@@ -20,7 +23,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 
-use claude::{Chat, ChatContext, ChatReply};
+use opencode::{Chat, ChatContext, ChatReply};
 use files::DroppedFile;
 use hooks::{HookPreview, HookStatus};
 use island::{PollGate, ScreenInfo};
@@ -60,6 +63,20 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
 }
 
 #[tauri::command]
+async fn glass_snapshot(window: tauri::WebviewWindow, shared: State<'_, Shared>) -> Result<Option<serde_json::Value>, String> {
+    if window.label() != island::WINDOW_LABEL || shared.gate.collapsed.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+    #[cfg(windows)]
+    {
+        tauri::async_runtime::spawn_blocking(move || platform::glass_snapshot(&window))
+            .await.map_err(|e| e.to_string())?.map(Some)
+    }
+    #[cfg(not(windows))]
+    Ok(None)
+}
+
+#[tauri::command]
 fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
     let (screen_changed, autostart_changed) = {
         let mut current = shared.settings.lock().unwrap();
@@ -69,13 +86,13 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
         (screen_changed, autostart_changed)
     };
     if let Err(err) = settings::save(&settings) {
-        eprintln!("[coucou] could not save settings: {err}");
+        eprintln!("[boo] could not save settings: {err}");
     }
     if autostart_changed {
         let manager = app.autolaunch();
         let result = if settings.autostart { manager.enable() } else { manager.disable() };
         if let Err(err) = result {
-            eprintln!("[coucou] autostart: {err}");
+            eprintln!("[boo] autostart: {err}");
         }
     }
     if screen_changed {
@@ -130,6 +147,22 @@ fn open_url(url: String) {
         return;
     }
     platform::open_url(&url);
+}
+
+/// The ↗ "Show window" button: bring the agent's own window forward; if it
+/// can't be found, open the session's folder in Explorer instead.
+#[tauri::command]
+fn focus_agent(pids: Vec<u32>, path: Option<String>) -> bool {
+    if focus::focus_ancestor_window(&pids) {
+        return true;
+    }
+    match path.filter(|p| std::path::Path::new(p).is_absolute() && std::path::Path::new(p).is_dir()) {
+        Some(p) => {
+            platform::reveal_folder(&p);
+            true
+        }
+        None => false,
+    }
 }
 
 /// "Open terminal" opens the working folder in VS Code when `code` is on PATH,
@@ -231,6 +264,39 @@ fn approval_decline(app: AppHandle, request_id: String) {
     pipe::decline(&app, &request_id);
 }
 
+// ── Other agents: OpenCode, Codex CLI, jcode ──────────────────────────────────
+
+#[tauri::command]
+fn agents_status() -> Vec<agents::AgentStatus> {
+    agents::status()
+}
+
+#[tauri::command]
+fn agents_preview(id: String, install: bool) -> Result<agents::AgentPreview, String> {
+    agents::preview(&id, install)
+}
+
+/// Only ever called from an explicit click in the settings window.
+#[tauri::command]
+fn agents_apply(id: String, install: bool, fingerprint: String) -> Result<String, String> {
+    agents::write(&id, install, &fingerprint)
+}
+
+// ── Video board pill ──────────────────────────────────────────────────────────
+
+/// Opens the board: its local page when `tracker.py board` is running, the
+/// folder otherwise. Read-only either way.
+#[tauri::command]
+async fn open_board(shared: State<'_, Shared>) -> Result<(), String> {
+    let dir = board::dir_from(&shared.settings.lock().unwrap().board_dir);
+    if board::board_up().await {
+        platform::open_url(&format!("http://127.0.0.1:{}/", board::BOARD_PORT));
+    } else {
+        platform::reveal_folder(&dir.to_string_lossy());
+    }
+    Ok(())
+}
+
 // ── Chat, files and secrets ───────────────────────────────────────────────────
 
 /// One chat turn. The API key and any file bytes stay on the Rust side.
@@ -242,7 +308,13 @@ async fn chat_send(
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
     let model = shared.settings.lock().unwrap().model.clone();
-    claude::send(&chat, &model, query, context).await
+    opencode::send(&chat, &model, query, context).await
+}
+
+/// True when the OpenCode login file holds a key, so chat works without a saved one.
+#[tauri::command]
+fn chat_login_available() -> bool {
+    opencode::login_available()
 }
 
 #[tauri::command]
@@ -321,7 +393,7 @@ fn create_settings_window(app: &AppHandle) {
     let url = settings_page_url(app);
     match WebviewWindowBuilder::new(app, "settings", url)
         .additional_browser_args(BROWSER_ARGS)
-        .title("Settings — Coucou")
+        .title("Settings — Boo")
         .inner_size(560.0, 680.0)
         .min_inner_size(460.0, 480.0)
         .resizable(true)
@@ -376,6 +448,7 @@ pub fn run() {
         .manage(Chat::default())
         .invoke_handler(tauri::generate_handler![
             boot,
+            glass_snapshot,
             save_settings,
             set_collapsed,
             set_island_rect,
@@ -383,6 +456,7 @@ pub fn run() {
             reposition,
             open_url,
             open_in_vscode,
+            focus_agent,
             quit_app,
             hooks_status,
             hooks_preview,
@@ -390,9 +464,14 @@ pub fn run() {
             approval_decision,
             approval_ack,
             approval_decline,
+            agents_status,
+            agents_preview,
+            agents_apply,
+            open_board,
             log_line,
             chat_send,
             chat_reset,
+            chat_login_available,
             ingest_file,
             secret_present,
             secret_set,
@@ -422,12 +501,12 @@ pub fn run() {
             gate.set_active(true);
             island::spawn_cursor_poll(handle.clone(), gate.clone());
 
-            log::line(format!("--- Coucou {} started ---", env!("CARGO_PKG_VERSION")));
+            log::line(format!("--- Boo {} started ---", env!("CARGO_PKG_VERSION")));
             hooks::ensure_hook_exe(&handle);
             pipe::start(handle.clone());
             integrations::start(handle.clone());
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("error while running Coucou");
+        .expect("error while running Boo");
 }

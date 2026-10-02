@@ -22,17 +22,17 @@ const PACKAGES = {
     {
       dir: "nsis",
       suffix: "-setup.exe",
-      names: [`Coucou-Windows-${version}-setup.exe`, "Coucou-Windows-setup.exe"],
+      names: [`Boo-Windows-${version}-setup.exe`, "Boo-Windows-setup.exe"],
     },
   ],
   linux: [
     {
       dir: "appimage",
       suffix: ".AppImage",
-      names: [`Coucou-Linux-${version}-${arch}.AppImage`, `Coucou-Linux-${arch}.AppImage`],
+      names: [`Boo-Linux-${version}-${arch}.AppImage`, `Boo-Linux-${arch}.AppImage`],
     },
-    { dir: "deb", suffix: ".deb", names: [`Coucou-Linux-${version}-${debArch}.deb`] },
-    { dir: "rpm", suffix: ".rpm", names: [`Coucou-Linux-${version}-${arch}.rpm`] },
+    { dir: "deb", suffix: ".deb", names: [`Boo-Linux-${version}-${debArch}.deb`] },
+    { dir: "rpm", suffix: ".rpm", names: [`Boo-Linux-${version}-${arch}.rpm`] },
   ],
 };
 

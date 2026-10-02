@@ -32,6 +32,9 @@ export async function refreshConfigured() {
     const info = State.integrations[id] ?? { data: {}, error: null, loaded: false, configured: false };
     State.integrations[id] = { ...info, configured: present };
   }
+  // The board needs no key: it reads a local folder.
+  const board = State.integrations.integration_board ?? { data: {}, error: null, loaded: false, configured: false };
+  State.integrations.integration_board = { ...board, configured: true };
   const hooks = State.settings.hooksInstalled;
   const claude = State.integrations.integration_claude ?? {
     data: {}, error: null, loaded: false, configured: false,

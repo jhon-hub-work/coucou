@@ -15,6 +15,8 @@ let pendingTimeout: number | null = null;
 
 interface HookPayload {
   hook_event_name?: string;
+  /** Set by the relay on Windows: its parent, grandparent… nearest first. */
+  ancestor_pids?: number[];
   request_id?: string;
   session_id?: string;
   cwd?: string;
@@ -24,7 +26,7 @@ interface HookPayload {
   tool_name?: string;
   tool_input?: Record<string, unknown>;
   /** Optional agent tag: lowercase, digits and hyphens, ≤ 24 chars. */
-  coucou_agent?: string;
+  boo_agent?: string;
 }
 
 /** Same rule as HookServer.validateAgent on macOS. "claude" is reserved. */
@@ -36,7 +38,29 @@ function validateAgent(raw: string | undefined): string | null {
 
 const FALLBACK_COLORS = ["#22C55E", "#EAB308", "#60A5FA", "#E879F9"];
 
+/** Agents with their own colour; anything else hashes into the fallback palette. */
+const KNOWN_COLORS: Record<string, string> = {
+  opencode: "#38BDF8",
+  codex: "#10A37F",
+  jcode: "#F472B6",
+  cline: "#A78BFA",
+  hermes: "#F59E0B",
+};
+
+/** Agents whose ghost is always shown, idle until their first event arrives. */
+const PINNED_AGENTS: [id: string, name: string][] = [
+  ["codex", "Codex"],
+  ["opencode", "OpenCode"],
+  ["jcode", "jcode"],
+  ["cline", "Cline"],
+  ["hermes", "Hermes"],
+];
+
+/** Agents whose PermissionRequest can be answered with Allow / Deny from the island. */
+const APPROVAL_AGENTS = new Set(["codex"]);
+
 function agentColor(name: string): string {
+  if (KNOWN_COLORS[name]) return KNOWN_COLORS[name];
   let h = 0;
   for (let i = 0; i < name.length; i++) {
     h = (Math.imul(31, h) + name.charCodeAt(i)) | 0;
@@ -132,11 +156,15 @@ function clearSession() {
   if (!t) return;
   t.steps = [];
   t.stepIndex = 0;
-  t.name = "VS Code";
+  t.name = "Claude Code";
   t.pillBadge = null;
 }
 
 export function registerHookHandlers(island: Island) {
+  // Each insert lands right after Claude Code, so go backwards to keep the order.
+  for (const [id, name] of [...PINNED_AGENTS].reverse()) {
+    State.upsertExternalAgent(`agent_${id}`, name, agentColor(id));
+  }
   void onEvent<HookPayload>("hook", (payload) => handleHook(island, payload));
 }
 
@@ -154,11 +182,13 @@ function handleHook(island: Island, payload: HookPayload) {
   const raw = lastPathComponent(cwd);
   const projectName = aliasProjectName(raw || "Session");
 
-  // Route to the right pill. Valid coucou_agent → dynamic "agent_<name>" pill.
+  // Route to the right pill. Valid boo_agent → dynamic "agent_<name>" pill.
   // "claude" is reserved; absent or invalid → Claude Code pill unchanged.
-  const validAgent = validateAgent(payload.coucou_agent);
+  const validAgent = validateAgent(payload.boo_agent);
   const agentId = validAgent ? `agent_${validAgent}` : CLAUDE_ID;
   const isExternalAgent = validAgent !== null;
+  // Pinned agents stay on screen and go back to idle; others leave when done.
+  const removable = isExternalAgent && !PINNED_AGENTS.some(([id]) => id === validAgent);
 
   const focused = State.focusId === agentId;
 
@@ -180,6 +210,8 @@ function handleHook(island: Island, payload: HookPayload) {
     } else {
       upsert(projectName, cwd);
     }
+    const t = State.tasks.find((x) => x.id === agentId);
+    if (t && Array.isArray(payload.ancestor_pids)) t.windowPids = payload.ancestor_pids;
   };
 
   switch (name) {
@@ -237,7 +269,7 @@ function handleHook(island: Island, payload: HookPayload) {
       if (focused) surface("finished", true);
       else State.setPillBadge(agentId, "finished");
       window.setTimeout(() => {
-        if (isExternalAgent) {
+        if (removable) {
           State.removeTask(agentId);
         } else {
           State.updateTask(agentId, "idle");
@@ -254,8 +286,11 @@ function handleHook(island: Island, payload: HookPayload) {
       break;
 
     case "SessionEnd":
-      if (isExternalAgent) {
+      if (removable) {
         State.removeTask(agentId);
+      } else if (isExternalAgent) {
+        State.updateTask(agentId, "idle");
+        State.setPillBadge(agentId, null);
       } else {
         State.updateTask(agentId, "idle");
         clearSession();
@@ -271,10 +306,10 @@ function handleHook(island: Island, payload: HookPayload) {
       break;
 
     case "PermissionRequest": {
-      // External agents do not get an approval card — showing one would look like
-      // a Claude Code request. Decline immediately so the agent re-asks in its
-      // terminal. Approval support for other agents will come with Codex support.
-      if (isExternalAgent) {
+      // Only agents that can take an answer back (Codex's hooks speak the same
+      // PermissionRequest protocol) get the card. Every other external agent is
+      // handed straight back so it asks in its own terminal.
+      if (isExternalAgent && !APPROVAL_AGENTS.has(validAgent!)) {
         if (payload.request_id) void Bridge.approvalDecline(payload.request_id);
         break;
       }
@@ -287,11 +322,12 @@ function handleHook(island: Island, payload: HookPayload) {
         if (requestId) void Bridge.approvalDecline(requestId);
         break;
       }
-      upsert(projectName, cwd);
+      ensurePill();
       if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
       const tool = payload.tool_name ?? "Tool";
       const input = payload.tool_input ?? {};
       State.pendingApproval = {
+        agentId,
         requestId,
         sessionId: payload.session_id ?? "",
         tool,
@@ -300,7 +336,7 @@ function handleHook(island: Island, payload: HookPayload) {
       // The relay's short ack window closes in 800 ms; everything below this
       // line is synchronous, so the card really is up by the time it lands.
       if (requestId) void Bridge.approvalAck(requestId);
-      State.updateTask(CLAUDE_ID, "approval");
+      State.updateTask(agentId, "approval");
       State.isPinned = true;
       Sound.play("approval");
       if (focused) {
@@ -309,10 +345,10 @@ function handleHook(island: Island, payload: HookPayload) {
         // Another agent holds the view, so the card would yank it away. The badge
         // is the signal instead — but it has to be on screen for that to mean
         // anything, hence the reveal. We just told the relay a human can act.
-        State.setPillBadge(CLAUDE_ID, "approval");
+        State.setPillBadge(agentId, "approval");
         island.reveal();
       }
-      // Coucou answers within 108 s or not at all; after that the terminal has
+      // Boo answers within 108 s or not at all; after that the terminal has
       // taken over and the card would be lying.
       pendingTimeout = window.setTimeout(() => {
         pendingTimeout = null;
@@ -320,8 +356,8 @@ function handleHook(island: Island, payload: HookPayload) {
         State.pendingApproval = null;
         State.isPinned = false;
         island.dropPin();
-        State.updateTask(CLAUDE_ID, "working");
-        State.setPillBadge(CLAUDE_ID, null);
+        State.updateTask(agentId, "working");
+        State.setPillBadge(agentId, null);
         if (State.view === "approval") island.setView(State.defaultView());
         State.notify();
       }, 110_000);

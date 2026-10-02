@@ -7,6 +7,8 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
+    #[serde(default)]
+    pub glass: Glass,
     pub sound_enabled: bool,
     pub sound_volume: f64,
     pub auto_close_interval: f64,
@@ -16,24 +18,42 @@ pub struct Settings {
     pub screen: String,
     pub autostart: bool,
     pub hooks_installed: bool,
-    /// Claude model used by the chat. Changeable in the settings window.
+    /// OpenCode Go model used by the chat. Changeable in the settings window.
     /// Defaulted explicitly so a settings.json written by an older build still loads.
     #[serde(default = "default_model")]
     pub model: String,
+    /// Folder of the video publishing board (tracker.py, status.json…), read by
+    /// the Board pill. Never written to.
+    #[serde(default = "default_board_dir")]
+    pub board_dir: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Glass {
+    #[default]
+    Clear,
+    Tinted,
+}
+
+fn default_board_dir() -> String {
+    crate::board::DEFAULT_DIR.to_string()
 }
 
 fn default_model() -> String {
-    crate::claude::DEFAULT_MODEL.to_string()
+    crate::opencode::DEFAULT_MODEL.to_string()
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            glass: Glass::Clear,
             sound_enabled: true,
             sound_volume: 0.12,
             auto_close_interval: 15.0,
             absence_interval: 180.0,
             active_integrations: vec![
+                "integration_board".into(),
                 "integration_resend".into(),
                 "integration_n8n".into(),
                 "integration_vercel".into(),
@@ -43,6 +63,7 @@ impl Default for Settings {
             autostart: false,
             hooks_installed: false,
             model: default_model(),
+            board_dir: default_board_dir(),
         }
     }
 }
@@ -70,4 +91,26 @@ pub fn save(settings: &Settings) -> std::io::Result<()> {
     let json = serde_json::to_vec_pretty(settings)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(settings_path(), json)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A settings.json written by an older build must load whole, not reset.
+    #[test]
+    fn old_settings_file_keeps_its_values() {
+        let old = r#"{"soundEnabled":false,"soundVolume":0.3,"autoCloseInterval":9.0,
+            "absenceInterval":180.0,"activeIntegrations":["integration_n8n"],
+            "screen":"primary","autostart":true,"hooksInstalled":true}"#;
+        let s: Settings = serde_json::from_str(old).expect("old file must still parse");
+        assert_eq!(s.board_dir, default_board_dir());
+        assert_eq!(s.glass, Glass::Clear);
+        let mut tinted = s.clone();
+        tinted.glass = Glass::Tinted;
+        let saved = serde_json::to_string(&tinted).unwrap();
+        assert_eq!(serde_json::from_str::<Settings>(&saved).unwrap().glass, Glass::Tinted);
+        assert!(s.autostart && s.hooks_installed && !s.sound_enabled);
+        assert_eq!(s.active_integrations, vec!["integration_n8n".to_string()]);
+    }
 }
