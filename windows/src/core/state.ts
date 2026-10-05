@@ -23,6 +23,36 @@ export interface AgentTask {
   windowPids?: number[];
 }
 
+/** Claude Code usage from usage.rs: exact (statusline) or a ledger estimate. */
+export interface UsageInfo {
+  five: number;
+  week: number;
+  exact: boolean;
+  limitedUntil: number | null;
+  alert: string | null;
+}
+
+/** A card from a local script (board, revisions, Hoot) — notify.rs. */
+export interface NotifyCard {
+  id: string;
+  source: string;
+  title: string;
+  body: string;
+  urgent: boolean;
+  phone: boolean;
+  link: string | null;
+  actions: { label: string }[];
+  at: number;
+}
+
+/** One AskUserQuestion question, as Claude Code sent it. */
+export interface QuestionInfo {
+  question: string;
+  header: string;
+  multiSelect: boolean;
+  options: { label: string; description: string }[];
+}
+
 export interface ApprovalInfo {
   /** The pill the request came from; Claude Code's when absent. */
   agentId?: string;
@@ -30,6 +60,8 @@ export interface ApprovalInfo {
   sessionId: string;
   tool: string;
   command: string;
+  /** Set for AskUserQuestion: answered with picks, never with Allow / Deny. */
+  questions?: QuestionInfo[];
 }
 
 export interface ChatMessage {
@@ -100,6 +132,10 @@ export interface Settings {
   model: string;
   /** Folder of the video publishing board read by the Board pill. */
   boardDir: string;
+  /** Publish agent states to the phone's private ntfy topic. */
+  phoneSync: boolean;
+  /** Made by Rust on first launch; 27launch is built with it. */
+  phoneTopic: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -116,6 +152,8 @@ export const DEFAULT_SETTINGS: Settings = {
   hooksInstalled: false,
   model: "deepseek-v4-flash",
   boardDir: "D:\\Work\\Claude\\videos\\_publish",
+  phoneSync: false,
+  phoneTopic: "",
 };
 
 type Listener = () => void;
@@ -147,6 +185,10 @@ class AppState {
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
   pendingApproval: ApprovalInfo | null = null;
+  usage: UsageInfo | null = null;
+  /** Notify cards still waiting, oldest first; `notifyFocus` is the one on screen. */
+  notifyCards: NotifyCard[] = [];
+  notifyFocus: string | null = null;
 
   integrations: Record<string, IntegrationInfo> = {};
 

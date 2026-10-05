@@ -26,6 +26,12 @@ pub struct Settings {
     /// the Board pill. Never written to.
     #[serde(default = "default_board_dir")]
     pub board_dir: String,
+    /// Publish agent states to the phone's ntfy topic (phone.rs). Off by default.
+    #[serde(default)]
+    pub phone_sync: bool,
+    /// Private ntfy topic for the phone, made once on first load.
+    #[serde(default)]
+    pub phone_topic: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
@@ -64,6 +70,8 @@ impl Default for Settings {
             hooks_installed: false,
             model: default_model(),
             board_dir: default_board_dir(),
+            phone_sync: false,
+            phone_topic: String::new(),
         }
     }
 }
@@ -79,10 +87,15 @@ fn settings_path() -> PathBuf {
 }
 
 pub fn load() -> Settings {
-    match std::fs::read(settings_path()) {
+    let mut settings: Settings = match std::fs::read(settings_path()) {
         Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
         Err(_) => Settings::default(),
+    };
+    if settings.phone_topic.is_empty() {
+        settings.phone_topic = crate::phone::new_topic();
+        let _ = save(&settings);
     }
+    settings
 }
 
 pub fn save(settings: &Settings) -> std::io::Result<()> {

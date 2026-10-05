@@ -5,7 +5,7 @@
 
 import { Bridge, onEvent } from "../core/bridge";
 import { Sound } from "../core/sound";
-import { State } from "../core/state";
+import { State, type NotifyCard, type QuestionInfo, type UsageInfo } from "../core/state";
 import type { Island } from "./island";
 
 const CLAUDE_ID = "integration_claude";
@@ -135,6 +135,11 @@ const APPROVAL_FIELDS = [
 ] as const;
 
 function approvalTarget(tool: string, input: Record<string, unknown>): string {
+  // A plan: its first real line (NoTo's "plan" kind).
+  if (tool === "ExitPlanMode" && typeof input.plan === "string") {
+    const line = input.plan.split(/\r?\n/).map((l) => l.replace(/^[#>*\-\s]+/, "").trim()).find(Boolean);
+    return `Plan · ${line ?? "proposed a plan"}`;
+  }
   for (const field of APPROVAL_FIELDS) {
     const value = input[field];
     if (typeof value === "string" && value.trim()) {
@@ -166,6 +171,87 @@ export function registerHookHandlers(island: Island) {
     State.upsertExternalAgent(`agent_${id}`, name, agentColor(id));
   }
   void onEvent<HookPayload>("hook", (payload) => handleHook(island, payload));
+
+  // The phone answered first (phone.rs already told the relay): take the card down.
+  void onEvent<{ requestId: string; decision: string }>("approval-resolved", ({ requestId, decision }) => {
+    const req = State.pendingApproval;
+    if (!req || req.requestId !== requestId) return;
+    Sound.play(decision === "deny" ? "blip" : "approve");
+    clearApproval(island, req.agentId ?? CLAUDE_ID);
+  });
+
+  // Cards from the board, the revision agent and Hoot. A new one opens the island
+  // (pinned while it has buttons), unless an approval holds it: then it waits.
+  const seen = new Set<string>();
+  void onEvent<NotifyCard[]>("notify-cards", (list) => {
+    const fresh = list.filter((c) => !seen.has(c.id));
+    for (const c of list) seen.add(c.id);
+    State.notifyCards = list;
+    const newest = fresh.at(-1);
+    if (newest && !State.paused && !State.pendingApproval) {
+      State.notifyFocus = newest.id;
+      Sound.play(newest.urgent || newest.actions.length ? "approval" : "blip");
+      State.isPinned = newest.urgent || newest.actions.length > 0;
+      island.alert("notify");
+    } else if (State.view === "notify" && !list.some((c) => c.id === State.notifyFocus)) {
+      // The one on screen was handled (here or on the phone): next one with buttons, or close.
+      const next = [...list].reverse().find((c) => c.actions.length);
+      State.notifyFocus = next?.id ?? null;
+      if (!next) {
+        State.isPinned = false;
+        island.dropPin();
+        island.setView(State.defaultView());
+      }
+    }
+    State.notify();
+  });
+
+  void onEvent<UsageInfo>("usage", (u) => {
+    State.usage = u;
+    State.notify();
+  });
+
+  // 75% (estimate or exact), limit hit, limit reset: a short note, never over an approval.
+  void onEvent<{ kind: string; text: string }>("usage-alert", ({ kind, text }) => {
+    if (State.paused || State.pendingApproval) return;
+    Sound.play(kind === "limit" ? "rate" : "blip");
+    State.noteMessage = text;
+    island.alert("note");
+    State.notify();
+  });
+}
+
+/**
+ * AskUserQuestion's `questions`, or [] when any of them cannot be shown faithfully
+ * (no text, no options): Boo then stays out of it rather than answer around it.
+ */
+export function parseQuestions(raw: unknown): QuestionInfo[] {
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  const out: QuestionInfo[] = [];
+  for (const q of raw as Record<string, unknown>[]) {
+    const options = Array.isArray(q?.options)
+      ? (q.options as Record<string, unknown>[])
+          .filter((o) => typeof o?.label === "string" && o.label)
+          .map((o) => ({ label: String(o.label), description: typeof o.description === "string" ? o.description : "" }))
+      : [];
+    if (typeof q?.question !== "string" || !q.question || options.length === 0) return [];
+    out.push({ question: q.question, header: typeof q.header === "string" ? q.header : "", multiSelect: q.multiSelect === true, options });
+  }
+  return out;
+}
+
+/** The approval card is over without a click on it: phone answer or timeout. */
+function clearApproval(island: Island, agentId: string) {
+  if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
+  pendingTimeout = null;
+  if (!State.pendingApproval) return;
+  State.pendingApproval = null;
+  State.isPinned = false;
+  island.dropPin();
+  State.updateTask(agentId, "working");
+  State.setPillBadge(agentId, null);
+  if (State.view === "approval" || State.view === "question") island.setView(State.defaultView());
+  State.notify();
 }
 
 function handleHook(island: Island, payload: HookPayload) {
@@ -326,21 +412,31 @@ function handleHook(island: Island, payload: HookPayload) {
       if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
       const tool = payload.tool_name ?? "Tool";
       const input = payload.tool_input ?? {};
+      // AskUserQuestion is a question, not a permission: it gets its options, never
+      // Allow / Deny. One Boo cannot show is handed straight back to the app's own UI.
+      const questions = tool === "AskUserQuestion" ? parseQuestions(input.questions) : undefined;
+      if (questions && questions.length === 0) {
+        if (requestId) void Bridge.approvalDecline(requestId);
+        break;
+      }
       State.pendingApproval = {
         agentId,
         requestId,
         sessionId: payload.session_id ?? "",
         tool,
-        command: approvalTarget(tool, input),
+        command: questions ? questions[0].question : approvalTarget(tool, input),
+        questions,
       };
       // The relay's short ack window closes in 800 ms; everything below this
       // line is synchronous, so the card really is up by the time it lands.
-      if (requestId) void Bridge.approvalAck(requestId);
-      State.updateTask(agentId, "approval");
+      // The phone gets the card's own line, so both sides ask the same question.
+      const asker = isExternalAgent ? (State.tasks.find((t) => t.id === agentId)?.name ?? validAgent!) : "Claude Code";
+      if (requestId) void Bridge.approvalAck(requestId, asker, tool, State.pendingApproval.command, questions ? input.questions : null);
+      State.updateTask(agentId, questions ? "question" : "approval");
       State.isPinned = true;
-      Sound.play("approval");
+      Sound.play(questions ? "question" : "approval");
       if (focused) {
-        island.alert("approval");
+        island.alert(questions ? "question" : "approval");
       } else {
         // Another agent holds the view, so the card would yank it away. The badge
         // is the signal instead — but it has to be on screen for that to mean
@@ -350,17 +446,7 @@ function handleHook(island: Island, payload: HookPayload) {
       }
       // Boo answers within 108 s or not at all; after that the terminal has
       // taken over and the card would be lying.
-      pendingTimeout = window.setTimeout(() => {
-        pendingTimeout = null;
-        if (!State.pendingApproval) return;
-        State.pendingApproval = null;
-        State.isPinned = false;
-        island.dropPin();
-        State.updateTask(agentId, "working");
-        State.setPillBadge(agentId, null);
-        if (State.view === "approval") island.setView(State.defaultView());
-        State.notify();
-      }, 110_000);
+      pendingTimeout = window.setTimeout(() => clearApproval(island, agentId), 110_000);
       break;
     }
 

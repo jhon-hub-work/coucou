@@ -20,6 +20,32 @@ export function timeAgo(value: unknown): string {
   return `${Math.floor(diff / 86400)}d`;
 }
 
+/**
+ * Claude Code's usage: two tiny bars, 5-hour and weekly. Digits only when the
+ * number is real (statusline); the ledger estimate stays a bar, labelled "est".
+ */
+export function usageMeter(): HTMLElement | null {
+  const u = State.usage;
+  if (!u) return null;
+  const limited = u.limitedUntil != null && u.limitedUntil * 1000 > Date.now();
+  const bar = (label: string, pct: number) => {
+    const p = Math.max(0, Math.min(100, pct));
+    const color = limited || p >= 95 ? "#F4505E" : p >= 75 ? "#F5A524" : "#22C55E";
+    const fill = h("i");
+    fill.style.width = `${p}%`;
+    fill.style.background = color;
+    return h("span", { class: "um-win" },
+      h("span", { text: label }),
+      h("span", { class: "um-bar" }, fill),
+      u.exact ? h("span", { text: `${Math.round(p)}%` }) : null);
+  };
+  const title = u.exact
+    ? "Claude Code usage, from its statusline"
+    : "Claude Code usage, a rough estimate from the local token ledger (not your plan's accounting)";
+  return h("span", { class: "usage-meter", title },
+    bar("5h", u.five), bar("wk", u.week), u.exact ? null : h("span", { class: "um-est", text: "est" }));
+}
+
 function header(color: string, name: string, kind: string, extra?: Node): HTMLElement {
   const row = h("div", { class: "int-head" }, dot(color, 7), h("b", { text: name }), h("span", { text: kind }));
   if (extra) row.append(extra);
@@ -60,8 +86,10 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
   // The Claude Code pill is about hooks, not a key — the macOS wording would be
   // misleading here.
   const missing = task.id === "integration_claude" ? "Hooks not installed" : "Key not configured";
-  const label = error ?? (configured ? "Connected · loading…" : missing);
-  const statusColor = error || !configured ? "#F4505E" : "#22C55E";
+  // Codex, OpenCode, Cline… need no key: an idle agent pill just has no session yet.
+  const isAgent = task.id.startsWith("agent_");
+  const label = isAgent ? `Waiting for a ${task.name} session` : error ?? (configured ? "Connected · loading…" : missing);
+  const statusColor = isAgent ? "#8e939c" : error || !configured ? "#F4505E" : "#22C55E";
 
   const actions = h("div", { class: "int-actions" });
   if (task.id === "integration_claude") {
@@ -110,7 +138,7 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
         onclick: () => void Bridge.refreshIntegration(task.id),
       }),
     );
-  } else {
+  } else if (!isAgent) {
     actions.append(
       h("button", { class: "link-btn", style: "color:#8e939c", text: "Settings…", onclick: openSettings }),
     );
@@ -119,7 +147,8 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
   return h(
     "div",
     { class: "int-card" },
-    header(task.color, task.id === "integration_claude" ? "Claude Code" : task.name, "Integration"),
+    header(task.color, task.id === "integration_claude" ? "Claude Code" : task.name, isAgent ? "Agent" : "Integration",
+      task.id === "integration_claude" ? usageMeter() ?? undefined : undefined),
     h("div", { class: "int-status" }, dot(statusColor, 5), h("span", { text: label })),
     actions,
   );

@@ -34,7 +34,7 @@ use crate::island::WINDOW_LABEL;
 use crate::log;
 
 /// Slightly under boo-hook's own 110 s wait, so we always answer first.
-const DECISION_TIMEOUT: Duration = Duration::from_secs(108);
+pub const DECISION_TIMEOUT: Duration = Duration::from_secs(108);
 /// How long the island gets to say "the card is up". This is the whole of B4:
 /// without it, an island that is paused, hidden behind a crashed webview or
 /// simply not listening would leave Claude Code staring at a prompt nobody can
@@ -195,6 +195,23 @@ async fn handle(app: AppHandle, mut pipe: impl Relay) {
         .unwrap_or_default()
         .to_string();
 
+    // A card from a local script (boo-hook --notify): "ok" back means Boo has it,
+    // so the script only falls back to its old ntfy topic when Boo is unreachable.
+    if event == "BooNotify" {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        let reply = match crate::notify::receive(&app, &payload, now) {
+            Ok(()) => "ok".to_string(),
+            Err(e) => {
+                log::line(format!("notify refused: {e}"));
+                format!("error {e}")
+            }
+        };
+        let _ = pipe.write_all(format!("{reply}\n").as_bytes()).await;
+        let _ = pipe.flush().await;
+        pipe.finish();
+        return;
+    }
+
     if event != "PermissionRequest" {
         log::line(format!("hook {event}"));
         let _ = app.emit_to(WINDOW_LABEL, "hook", payload);
@@ -214,6 +231,8 @@ async fn handle(app: AppHandle, mut pipe: impl Relay) {
 
     let decision = wait_for_decision(&id, &mut rx).await;
     app.state::<Pending>().0.lock().unwrap().remove(&id);
+    // Answered here, on the phone, or by nobody: the phone card goes either way.
+    crate::phone::approval_close(&app, &id);
 
     // No decision: say nothing at all. boo-hook then writes nothing to stdout
     // and Claude Code asks in the terminal, exactly as if Boo were closed.
@@ -260,29 +279,42 @@ async fn wait_for_decision(id: &str, rx: &mut mpsc::Receiver<Reply>) -> Option<S
     }
 }
 
-fn send(app: &AppHandle, request_id: &str, reply: Reply, keep: bool) {
+/// False when no request by that id is waiting.
+fn send(app: &AppHandle, request_id: &str, reply: Reply, keep: bool) -> bool {
     let sender = {
         let pending = app.state::<Pending>();
         let mut map = pending.0.lock().unwrap();
         if keep { map.get(request_id).cloned() } else { map.remove(request_id) }
     };
     match sender {
-        Some(tx) => {
-            let _ = tx.try_send(reply);
+        Some(tx) => tx.try_send(reply).is_ok(),
+        None => {
+            log::line(format!("reply for id={request_id} — no pending request"));
+            false
         }
-        None => log::line(format!("reply for id={request_id} — no pending request")),
     }
 }
 
 /// The island has the card on screen; the long wait may begin.
-pub fn acknowledge(app: &AppHandle, request_id: &str) {
-    send(app, request_id, Reply::Ack, true);
+pub fn acknowledge(app: &AppHandle, request_id: &str) -> bool {
+    send(app, request_id, Reply::Ack, true)
 }
 
 /// Nobody can act on this one — paused, or another card already holds the view.
 pub fn decline(app: &AppHandle, request_id: &str) {
     log::line(format!("decline id={request_id}"));
     send(app, request_id, Reply::Decline, false);
+}
+
+/// AskUserQuestion answered (island or phone): question text → chosen label(s).
+/// boo-hook only turns this into an allow if every question is answered.
+pub fn answer_questions(app: &AppHandle, request_id: &str, answers: &serde_json::Map<String, Value>) {
+    if answers.is_empty() || !answers.values().all(|v| v.as_str().is_some_and(|s| !s.trim().is_empty())) {
+        log::line(format!("answers id={request_id} incomplete — ignored"));
+        return;
+    }
+    log::line(format!("decision id={request_id} answers ({} question(s))", answers.len()));
+    send(app, request_id, Reply::Decision(format!("answers {}", Value::Object(answers.clone()))), false);
 }
 
 /// Called by the island's Allow / Deny buttons. Only ever a bare word: turning

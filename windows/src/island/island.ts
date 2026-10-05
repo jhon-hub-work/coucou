@@ -2,7 +2,7 @@
 // Mirrors IslandRootView.swift + IslandWindowController.swift.
 
 import { Tracked, Spring, clamp } from "../core/anim";
-import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
+import { Bridge, IS_TAURI } from "../core/bridge";
 import {
   EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
   ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
@@ -32,6 +32,14 @@ const PRE_PROGRESS = USC.T_PROG_START - USC.T_DROP;
 
 const modeOrder = (m: IslandMode) => (m === "hidden" ? 0 : m === "compact" ? 1 : 2);
 
+/** The snapshot as a short blob: handle. As a 300 KB data: URL inside --glass-image,
+ *  every glass control re-parsed it on each style recalc: 110-190 ms freezes. */
+function blobUrl(dataUrl: string): string {
+  const [head, b64] = dataUrl.split(",", 2);
+  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  return URL.createObjectURL(new Blob([bytes], { type: head.slice(5).split(";")[0] }));
+}
+
 export class Island {
   readonly fsm = new IslandStateMachine();
 
@@ -46,6 +54,7 @@ export class Island {
   private glassEpoch = 0;
   private drawGlass: (() => void) | null = null;
   private glassImage = new Image();
+  private glassUrl: string | null = null;
   private contentEl!: HTMLElement;
   private viewsEl!: HTMLElement;
   private botCanvas!: HTMLCanvasElement;
@@ -147,18 +156,44 @@ export class Island {
       openUrl: (url) => {
         if (url) void Bridge.openUrl(url);
       },
-      decide: (d) => {
+      decide: (d, answers) => {
         const req = State.pendingApproval;
         void Bridge.log(`decide ${d} req=${req?.requestId ?? "none"}`);
         if (!req) return;
+        // A question is answered with its answers or handed back, never allowed blind.
+        if (req.questions && !answers && d === "allow") return;
         Sound.play(d === "deny" ? "blip" : "approve");
-        void Bridge.approvalDecision(req.requestId, d);
+        if (answers) void Bridge.approvalAnswers(req.requestId, answers);
+        else if (req.questions) {
+          // "Answer in the app": let Claude Code's own question UI take it now.
+          void Bridge.approvalDecline(req.requestId);
+          const task = State.tasks.find((t) => t.id === (req.agentId ?? "integration_claude"));
+          void Bridge.focusAgent(task?.windowPids ?? [], task?.sessionCwd ?? null);
+        } else void Bridge.approvalDecision(req.requestId, d);
+        void Bridge.focusWindow(false);
         State.pendingApproval = null;
         State.isPinned = false;
         this.fsm.pinned = false;
         const asker = req.agentId ?? "integration_claude";
         State.updateTask(asker, "working");
         State.setPillBadge(asker, null);
+        this.setView(State.defaultView());
+      },
+      notify: (id, index) => {
+        const card = State.notifyCards.find((c) => c.id === id);
+        if (!card) return;
+        if (index === "open") {
+          if (card.link) void Bridge.openUrl(card.link);
+          return;
+        }
+        if (index !== "later") {
+          Sound.play(index === null ? "blip" : "approve");
+          void Bridge.notifyAct(id, index); // the list update that follows moves the view on
+          return;
+        }
+        // Later: off the screen, still waiting (and still on the phone).
+        State.isPinned = false;
+        this.fsm.pinned = false;
         this.setView(State.defaultView());
       },
       toggleSound: () => {
@@ -265,12 +300,15 @@ export class Island {
     try {
       const image = await Bridge.glassSnapshot();
       if (image && this.glassVisible && epoch === this.glassEpoch) {
+        const url = blobUrl(image.dataUrl);
         this.glassEl.style.backgroundSize = `${image.width}px ${image.height}px`;
-        this.glassEl.style.backgroundImage = `url("${image.dataUrl}")`;
-        this.islandEl.style.setProperty("--glass-image", `url("${image.dataUrl}")`);
+        this.glassEl.style.backgroundImage = `url("${url}")`;
+        this.islandEl.style.setProperty("--glass-image", `url("${url}")`);
         this.glassEl.dataset.panelWidth = String(image.width);
         this.glassEl.dataset.panelHeight = String(image.height);
-        this.glassImage.src = image.dataUrl;
+        this.glassImage.src = url;
+        if (this.glassUrl) URL.revokeObjectURL(this.glassUrl);
+        this.glassUrl = url;
       }
     } finally {
       this.glassCapturing = false;
@@ -518,8 +556,8 @@ export class Island {
 
   // ── File drop ───────────────────────────────────────────────────────────────
 
-  private onDragDrop(e: { type: string; paths?: string[] }) {
-    if (e.type !== "over") void Bridge.log(`drag ${e.type} ${e.paths?.length ?? 0} file(s)`);
+  private onDragDrop(e: { type: string; file?: File }) {
+    if (e.type !== "over") void Bridge.log(`drag ${e.type}${e.file ? " 1 file" : ""}`);
     if (State.paused) return;
     switch (e.type) {
       case "enter":
@@ -544,13 +582,12 @@ export class Island {
       }
       case "drop": {
         State.fileDragOver = false;
-        const path = e.paths?.[0];
-        if (!path) {
+        if (!e.file) {
           this.engine.animateMorph(0);
           this.setView(State.defaultView());
           return;
         }
-        this.swallow(path);
+        this.swallow(e.file);
         break;
       }
     }
@@ -561,10 +598,10 @@ export class Island {
    * the inbox runs in the background and swaps the path in when it lands, so a
    * slow disk can never stall the animation — same as FileDropHandler on macOS.
    */
-  private swallow(path: string) {
-    const name = path.split(/[\\/]/).pop() || "file";
-    State.droppedFile = { name, path };
-    State.promptContext = { kind: "file", name, path };
+  private swallow(dropped: File) {
+    const name = dropped.name || "file";
+    State.droppedFile = { name, path: "" };
+    State.promptContext = { kind: "file", name, path: "" };
     State.chatHistory = [];
     void Bridge.chatReset();
 
@@ -581,7 +618,7 @@ export class Island {
     this.setView("uploading");
     this.ensureRunning();
 
-    void Bridge.ingestFile(path)
+    void Bridge.ingestFile(dropped)
       .then((file) => {
         State.droppedFile = { name: file.name, path: file.path };
         State.promptContext = { kind: "file", name: file.name, path: file.path };
@@ -728,7 +765,27 @@ export class Island {
       State.lastActivity = performance.now();
     });
 
-    void onDragDrop((e) => this.onDragDrop(e));
+    // WebView2 owns the drop (dragDropEnabled is off in tauri.conf.json: the target
+    // Tauri registers is never reached on Windows 11, 2026-10-05), so the page's own
+    // drag events drive it and the page reads the file.
+    const hasFiles = (e: DragEvent) => e.dataTransfer?.types.includes("Files") ?? false;
+    window.addEventListener("dragenter", (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      this.onDragDrop({ type: "enter" });
+    });
+    window.addEventListener("dragover", (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    });
+    window.addEventListener("dragleave", (e) => {
+      if (e.relatedTarget == null) this.onDragDrop({ type: "leave" });
+    });
+    window.addEventListener("drop", (e) => {
+      e.preventDefault();
+      this.onDragDrop({ type: "drop", file: e.dataTransfer?.files[0] });
+    });
 
     // Outside Tauri (plain browser) drive the cursor from DOM events so the
     // island can be inspected with `npm run dev`.

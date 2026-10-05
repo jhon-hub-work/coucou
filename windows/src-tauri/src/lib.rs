@@ -9,11 +9,14 @@ mod hooks;
 mod integrations;
 mod island;
 mod log;
+mod phone;
 mod pipe;
 mod platform;
 mod secrets;
 mod settings;
 mod tray;
+mod usage;
+mod notify;
 
 use std::process::Command;
 use std::sync::atomic::Ordering;
@@ -77,7 +80,11 @@ async fn glass_snapshot(window: tauri::WebviewWindow, shared: State<'_, Shared>)
 }
 
 #[tauri::command]
-fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
+fn save_settings(app: AppHandle, shared: State<Shared>, mut settings: Settings) {
+    // A page that never saw the phone topic must not wipe it: the phone is built with it.
+    if settings.phone_topic.is_empty() {
+        settings.phone_topic = shared.settings.lock().unwrap().phone_topic.clone();
+    }
     let (screen_changed, autostart_changed) = {
         let mut current = shared.settings.lock().unwrap();
         let screen_changed = current.screen != settings.screen;
@@ -252,9 +259,36 @@ fn approval_decision(app: AppHandle, request_id: String, decision: String) {
 /// The island has the card on screen, so the long wait for a human may begin.
 /// Until this arrives the relay only waits a few hundred milliseconds, which is
 /// what stops a paused or unresponsive island from freezing Claude Code.
+///
+/// `agent`, `tool` and `text` are what the card shows; the phone gets the same
+/// line (phone.rs), so both sides ask the same question.
 #[tauri::command]
-fn approval_ack(app: AppHandle, request_id: String) {
-    pipe::acknowledge(&app, &request_id);
+fn approval_ack(
+    app: AppHandle,
+    request_id: String,
+    agent: Option<String>,
+    tool: Option<String>,
+    text: Option<String>,
+    questions: Option<serde_json::Value>,
+) {
+    if pipe::acknowledge(&app, &request_id) {
+        let tool = tool.unwrap_or_default();
+        let text = text.filter(|t| !t.is_empty()).unwrap_or_else(|| tool.clone());
+        let questions = questions.map(|q| phone::parse_questions(&q)).unwrap_or_default();
+        phone::approval_open(&app, &request_id, &agent.unwrap_or_else(|| "Claude Code".into()), &tool, &text, questions);
+    }
+}
+
+/// A notify card's button (index) or its dismiss (None), pressed on the island.
+#[tauri::command]
+fn notify_act(app: AppHandle, id: String, index: Option<usize>) -> bool {
+    notify::act(&app, &id, index, None)
+}
+
+/// The island answered an AskUserQuestion: question text → chosen label(s).
+#[tauri::command]
+fn approval_answers(app: AppHandle, request_id: String, answers: serde_json::Map<String, serde_json::Value>) {
+    pipe::answer_questions(&app, &request_id, &answers);
 }
 
 /// Nobody can act on this request — the island is paused, or another card is
@@ -280,6 +314,12 @@ fn agents_preview(id: String, install: bool) -> Result<agents::AgentPreview, Str
 #[tauri::command]
 fn agents_apply(id: String, install: bool, fingerprint: String) -> Result<String, String> {
     agents::write(&id, install, &fingerprint)
+}
+
+/// The island's agent pills changed; phone.rs decides whether the phone hears of it.
+#[tauri::command]
+fn phone_agents(agents: Vec<phone::AgentIn>) {
+    phone::agents(agents);
 }
 
 // ── Video board pill ──────────────────────────────────────────────────────────
@@ -322,10 +362,32 @@ fn chat_reset(chat: State<Chat>) {
     chat.reset();
 }
 
-/// Copies a dropped file into the inbox and reports its name back.
+/// Saves a file dropped on the island into the inbox and reports its name back.
+/// The page sends the bytes as the raw body and the name, percent-encoded, in a header.
 #[tauri::command]
-fn ingest_file(path: String) -> Result<DroppedFile, String> {
-    files::ingest(&path)
+fn ingest_bytes(request: tauri::ipc::Request<'_>) -> Result<DroppedFile, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else { return Err("no file data".into()) };
+    let name = request.headers().get("x-file-name").and_then(|v| v.to_str().ok()).map(percent_decode).unwrap_or_default();
+    files::ingest_bytes(&name, bytes)
+}
+
+/// encodeURIComponent undone (HTTP headers carry ASCII only).
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// The island may only ask whether a key exists — never read it.
@@ -462,6 +524,8 @@ pub fn run() {
             hooks_preview,
             hooks_apply,
             approval_decision,
+            approval_answers,
+            notify_act,
             approval_ack,
             approval_decline,
             agents_status,
@@ -472,7 +536,7 @@ pub fn run() {
             chat_send,
             chat_reset,
             chat_login_available,
-            ingest_file,
+            ingest_bytes,
             secret_present,
             secret_set,
             secret_clear,
@@ -480,6 +544,7 @@ pub fn run() {
             open_n8n,
             open_settings_window,
             set_paused,
+            phone_agents,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -504,6 +569,8 @@ pub fn run() {
             log::line(format!("--- Boo {} started ---", env!("CARGO_PKG_VERSION")));
             hooks::ensure_hook_exe(&handle);
             pipe::start(handle.clone());
+            phone::start(handle.clone());
+            usage::start(handle.clone());
             integrations::start(handle.clone());
             Ok(())
         })

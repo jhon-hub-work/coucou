@@ -11,7 +11,7 @@ import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../boo/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
-import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
+import { renderIntegrationCard, usageMeter, type IntegrationCardHooks } from "./integrations";
 
 export interface ViewActions {
   setView(v: IslandViewName): void;
@@ -21,7 +21,10 @@ export interface ViewActions {
   /** The ↗ button: opens whatever the focused pill points at. */
   openTarget(): void;
   openUrl(url: string): void;
-  decide(d: "allow" | "deny"): void;
+  /** Allow / Deny; for a question, `answers` (question → label) or "deny" = answer in the app. */
+  decide(d: "allow" | "deny", answers?: Record<string, string>): void;
+  /** A notify card: button index, null = dismiss, "open" = its link, "later" = put it away. */
+  notify(id: string, index: number | null | "open" | "later"): void;
   toggleSound(): void;
   setVolume(v: number): void;
   setAutoClose(seconds: number): void;
@@ -191,6 +194,8 @@ function buildOverview(actions: ViewActions): ViewHost {
           h("span", { class: "name", text: task.name }),
           h("span", { class: "tool", text: task.source === "claudeCode" ? "Claude Code" : "n8n" }),
         );
+        const meter = usageMeter();
+        if (meter) who.append(meter);
         if (task.steps.length > 1) {
           who.append(h("span", {
             class: "count",
@@ -204,6 +209,7 @@ function buildOverview(actions: ViewActions): ViewHost {
           task.id, detailOpen, task.state, task.steps.join("|"),
           info?.loaded, info?.error, info?.configured,
           JSON.stringify(info?.data ?? {}),
+          task.id === "integration_claude" ? JSON.stringify(State.usage) : "",
         ].join("~");
         if (key !== cardKey) {
           cardKey = key;
@@ -300,7 +306,10 @@ function buildApproval(actions: ViewActions): ViewHost {
     sync() {
       clear(who);
       const asker = State.tasks.find((t) => t.id === State.pendingApproval?.agentId);
-      who.append(agentWho(asker ?? State.focusTask, "needs permission"));
+      const plan = State.pendingApproval?.tool === "ExitPlanMode";
+      // Like NoTo: "Looks good" lets the plan through, and Claude Code then asks once
+      // more in its own window; "No, rethink" settles it from here.
+      who.append(agentWho(asker ?? State.focusTask, plan ? "proposed a plan · yes still needs a nod in the app" : "needs permission"));
       // The whole point of approving here rather than in the terminal: this line
       // is the command, the file path or the URL being authorised, not just the
       // name of the tool asking.
@@ -308,12 +317,13 @@ function buildApproval(actions: ViewActions): ViewHost {
       // Two buttons, built once. Rebuilding them between a mouse-down and a
       // mouse-up would swallow the click, and there is nothing left to vary:
       // "Always" is gone until the remembered-rules list exists to back it.
-      if (rowKey === "built") return;
-      rowKey = "built";
+      const kind = plan ? "plan" : "permission";
+      if (rowKey === kind) return;
+      rowKey = kind;
       clear(row);
       row.append(
-        btn("Deny", "secondary", () => actions.decide("deny"), "N"),
-        btn("Allow", "primary", () => actions.decide("allow"), "Y"),
+        btn(plan ? "No, rethink" : "Deny", "secondary", () => actions.decide("deny"), "N"),
+        btn(plan ? "Looks good" : "Allow", "primary", () => actions.decide("allow"), "Y"),
       );
     },
   };
@@ -321,20 +331,134 @@ function buildApproval(actions: ViewActions): ViewHost {
 
 // ── Question ──────────────────────────────────────────────────────────────────
 
-function buildQuestion(): ViewHost {
+function buildQuestion(actions: ViewActions): ViewHost {
   const who = h("div");
-  const title = h("div", { class: "title" });
-  const row = h("div", { class: "actions" });
+  const title = h("div", { class: "title q-title" });
+  const row = h("div", { class: "actions q-options" });
   const el = h("div", { class: "view" }, card("cyan", stack(116, 16, who, title, row)));
+  // Where we are in an AskUserQuestion: which question, what was picked so far.
+  let key = "";
+  let index = 0;
+  let answers: Record<string, string> = {};
+  let picked = new Set<string>();
+  let typing = false;
+
+  function next(value: string) {
+    const qs = State.pendingApproval?.questions ?? [];
+    answers[qs[index].question] = value;
+    index += 1;
+    picked = new Set();
+    typing = false;
+    if (index >= qs.length) actions.decide("allow", answers);
+    else render();
+  }
+
+  function render() {
+    const req = State.pendingApproval;
+    const q = req?.questions?.[index];
+    clear(row);
+    if (!req || !q) return;
+    const of = req.questions!.length > 1 ? ` (${index + 1}/${req.questions!.length})` : "";
+    title.textContent = q.question + of;
+    title.title = q.question;
+    if (typing) {
+      const input = h("input", { class: "q-input", placeholder: "Your answer…", maxlength: "500" }) as HTMLInputElement;
+      const send = () => input.value.trim() && next(input.value.trim());
+      input.addEventListener("keydown", (e) => {
+        if ((e as KeyboardEvent).key === "Enter") send();
+        e.stopPropagation();
+      });
+      row.append(input, btn("Send", "primary", send));
+      void Bridge.focusWindow(true);
+      window.setTimeout(() => input.focus(), 60);
+      return;
+    }
+    for (const o of q.options) {
+      const b = btn(o.label, q.multiSelect && picked.has(o.label) ? "primary" : "secondary", () => {
+        if (!q.multiSelect) return next(o.label);
+        if (picked.has(o.label)) picked.delete(o.label);
+        else picked.add(o.label);
+        render();
+      });
+      if (o.description) b.title = o.description;
+      row.append(b);
+    }
+    if (q.multiSelect) {
+      const done = btn("Send", "primary", () => picked.size && next(q.options.map((o) => o.label).filter((l) => picked.has(l)).join(",")));
+      done.style.opacity = picked.size ? "1" : "0.4";
+      row.append(done);
+    }
+    row.append(
+      h("button", { class: "link-btn", text: "Other…", onclick: () => { typing = true; render(); } }),
+      h("button", { class: "link-btn", text: "Answer in app", title: "Claude Code asks in its own window", onclick: () => actions.decide("deny") }),
+    );
+  }
+
   return {
     el,
     sync() {
+      const req = State.pendingApproval;
       clear(who);
+      if (req?.questions) {
+        const asker = State.tasks.find((t) => t.id === req.agentId);
+        who.append(agentWho(asker ?? State.focusTask, req.questions[index]?.header || "has a question"));
+        // Rebuilt only for a new request: rebuilding between mouse-down and
+        // mouse-up would swallow the click.
+        if (key !== req.requestId) {
+          key = req.requestId;
+          index = 0;
+          answers = {};
+          picked = new Set();
+          typing = false;
+          render();
+        }
+        return;
+      }
+      key = "";
       who.append(agentWho(State.focusTask, "Claude Code is asking a question"));
       const task = State.focusTask;
       title.textContent = task?.steps.at(-1) ?? "Claude needs an answer.";
       clear(row);
-      row.append(h("div", { class: "sub", text: "Answer in your terminal — Boo can't reply for you yet." }));
+      row.append(h("div", { class: "sub", text: "Answer in your terminal." }));
+    },
+  };
+}
+
+// ── Notify card (board, revisions, Hoot) ───────────────────────────────────────
+
+const SOURCE_NAMES: Record<string, [string, string]> = {
+  board: ["DYE board", "#4FD1C5"],
+  revisions: ["Dr L revisions", "#F472B6"],
+  hoot: ["Hoot", "#F5A524"],
+};
+
+function buildNotify(actions: ViewActions): ViewHost {
+  const who = h("div");
+  const title = h("div", { class: "title q-title" });
+  const body = h("div", { class: "sub n-body" });
+  const row = h("div", { class: "actions q-options" });
+  const el = h("div", { class: "view" }, card("amber", stack(116, 16, who, title, body, row)));
+  let key = "";
+  return {
+    el,
+    sync() {
+      const c = State.notifyCards.find((x) => x.id === State.notifyFocus) ?? State.notifyCards.at(-1);
+      if (!c) return;
+      clear(who);
+      const [name, color] = SOURCE_NAMES[c.source] ?? [c.source, "#FFFFFF"];
+      const waiting = State.notifyCards.length > 1 ? ` · ${State.notifyCards.length} waiting` : "";
+      const when = new Date(c.at * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      who.append(h("div", { class: "who-row" }, dot(color, 8), h("span", { class: "n", text: name }), h("span", { text: when + waiting })));
+      title.textContent = c.title;
+      body.textContent = c.body;
+      // Buttons only for a new card: a rebuild between mouse-down and up loses the click.
+      if (key === c.id) return;
+      key = c.id;
+      clear(row);
+      c.actions.forEach((a, i) => row.append(btn(a.label, i === 0 ? "primary" : "secondary", () => actions.notify(c.id, i))));
+      if (c.link) row.append(h("button", { class: "link-btn", text: "Open", onclick: () => actions.notify(c.id, "open") }));
+      if (c.actions.length) row.append(h("button", { class: "link-btn", text: "Later", onclick: () => actions.notify(c.id, "later") }));
+      row.append(h("button", { class: "link-btn", text: "Dismiss", onclick: () => actions.notify(c.id, null) }));
     },
   };
 }
@@ -507,11 +631,12 @@ export function buildViews(
   map.set("overview", buildOverview(actions));
   map.set("empty", buildEmpty(actions));
   map.set("approval", buildApproval(actions));
-  map.set("question", buildQuestion());
+  map.set("question", buildQuestion(actions));
   map.set("error", buildError(actions));
   map.set("finished", buildFinished(actions));
   map.set("confused", buildConfused());
   map.set("note", buildNote());
+  map.set("notify", buildNotify(actions));
   map.set("settings", buildSettings(actions));
   map.set("prompt", buildPrompt(onChatHeightChange));
   map.set("upload", buildUpload());

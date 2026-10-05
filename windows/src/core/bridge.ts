@@ -4,7 +4,6 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { Settings } from "./state";
 
 export const IS_TAURI =
@@ -89,7 +88,13 @@ export const Bridge = {
   approvalDecision: (requestId: string, decision: "allow" | "deny") =>
     call<void>("approval_decision", { requestId, decision }),
   /** "The card is up" — until this lands the relay only waits a moment. */
-  approvalAck: (requestId: string) => call<void>("approval_ack", { requestId }),
+  approvalAck: (requestId: string, agent: string, tool: string, text: string, questions: unknown = null) =>
+    call<void>("approval_ack", { requestId, agent, tool, text, questions }),
+  /** A notify card's button (its index) or dismiss (null). */
+  notifyAct: (id: string, index: number | null) => call<boolean>("notify_act", { id, index }),
+  /** AskUserQuestion answered: question text → chosen label(s). */
+  approvalAnswers: (requestId: string, answers: Record<string, string>) =>
+    call<void>("approval_answers", { requestId, answers }),
   /** "Nobody can act on this" — Claude Code asks in the terminal right away. */
   approvalDecline: (requestId: string) => call<void>("approval_decline", { requestId }),
 
@@ -100,8 +105,12 @@ export const Bridge = {
   chatReset: () => call<void>("chat_reset"),
   /** True when the OpenCode login file holds a key, so chat works without a saved one. */
   chatLoginAvailable: () => call<boolean>("chat_login_available"),
-  /** Copies a dropped file into the inbox. */
-  ingestFile: (path: string) => callOrThrow<DroppedFile>("ingest_file", { path }),
+  /** Saves a file dropped on the island into the inbox (the page read it itself). */
+  ingestFile: async (file: File) => {
+    if (!IS_TAURI) throw new Error("not running inside Boo");
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    return invoke<DroppedFile>("ingest_bytes", bytes, { headers: { "x-file-name": encodeURIComponent(file.name) } });
+  },
   /** Only ever tells you whether a key exists — never its value. */
   secretPresent: (key: string) => call<boolean>("secret_present", { key }),
   secretSet: (key: string, value: string) => callOrThrow<void>("secret_set", { key, value }),
@@ -116,6 +125,10 @@ export const Bridge = {
 
   /** Tray → Pause. Stops the integration pollers, not just the island. */
   setPaused: (paused: boolean) => call<void>("set_paused", { paused }),
+
+  /** Agent pills for the phone; Rust filters, throttles and decides whether to send. */
+  phoneAgents: (agents: { id: string; name: string; color: string; state: string; step: string }[]) =>
+    call<void>("phone_agents", { agents }),
 };
 
 export interface IntegrationUpdate {
@@ -183,19 +196,6 @@ export type BridgeEvent =
   | { name: "tray"; payload: string }
   | { name: "hook"; payload: Record<string, unknown> }
   | { name: "screen-changed"; payload: null };
-
-export interface DragDropPayload {
-  type: "enter" | "over" | "drop" | "leave";
-  paths?: string[];
-}
-
-/** Files dragged onto the island. Only reaches us when the window takes the mouse. */
-export async function onDragDrop(handler: (e: DragDropPayload) => void) {
-  if (!IS_TAURI) return () => {};
-  return getCurrentWebview().onDragDropEvent((event) => {
-    handler(event.payload as DragDropPayload);
-  });
-}
 
 export async function onEvent<T>(name: string, handler: (payload: T) => void) {
   if (!IS_TAURI) return () => {};

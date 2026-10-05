@@ -588,6 +588,11 @@ function generalSection(): HTMLElement {
       h("label", { text: "Launch at startup" }),
       toggle(settings.autostart, (v) => { settings.autostart = v; void save(); }),
     ),
+    h("div", { class: "row" },
+      h("label", { text: "Phone" }),
+      toggle(settings.phoneSync, (v) => { settings.phoneSync = v; void save(); }),
+      h("span", { class: "path", text: `ntfy.sh/${settings.phoneTopic}`, title: "Agent names and states only, for 27launch's island. Don't subscribe to this topic in the ntfy app." }),
+    ),
   );
 }
 

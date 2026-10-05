@@ -45,6 +45,9 @@ mod unix;
 use unix::connect;
 
 fn main() {
+    if std::env::args().any(|a| a == "--notify") {
+        notify();
+    }
     let Some((payload, event)) = read_event() else { std::process::exit(0) };
 
     let waits_for_answer = event == "PermissionRequest";
@@ -68,6 +71,29 @@ fn main() {
     }
     // Nothing printed: Claude Code asks in the terminal, as if we were not here.
     std::process::exit(0);
+}
+
+/// `boo-hook --notify`: a card from a local script (JSON on stdin, see the app's
+/// notify.rs). Exit 0 and "ok" once Boo has it; exit 3 when Boo is unreachable or
+/// refused it (the reason on stdout), so the script can fall back to its old route.
+fn notify() -> ! {
+    let mut raw = Vec::new();
+    let _ = std::io::stdin().read_to_end(&mut raw);
+    let raw = raw.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&raw).to_vec();
+    let Ok(mut card) = serde_json::from_slice::<serde_json::Value>(&raw) else {
+        println!("error not JSON");
+        std::process::exit(3)
+    };
+    let Some(map) = card.as_object_mut() else { std::process::exit(3) };
+    map.insert("hook_event_name".into(), "BooNotify".into());
+    let line = format!("{card}\n");
+    let (tx, rx) = mpsc::channel::<Option<String>>();
+    std::thread::spawn(move || {
+        let _ = tx.send(talk(&line, true));
+    });
+    let reply = rx.recv_timeout(FIRE_AND_FORGET_BUDGET).ok().flatten().unwrap_or_else(|| "error Boo is not running".into());
+    println!("{reply}");
+    std::process::exit(if reply == "ok" { 0 } else { 3 })
 }
 
 /// The documented PermissionRequest output. Anything we do not recognise prints
@@ -136,7 +162,8 @@ fn jcode_payload(event: &str, env: &dyn Fn(&str) -> String) -> serde_json::Value
     Value::Object(map)
 }
 
-/// Reads stdin and returns the payload to forward plus the event name.
+/// Reads stdin and returns the payload to forward and the event name. None means
+/// there is nothing for Boo to do and the hook exits silently.
 fn read_event() -> Option<(String, String)> {
     // --agent tags the payload with boo_agent so the app routes to the right pill.
     // Absent or invalid names are validated and discarded by the app, not here.
@@ -172,6 +199,12 @@ fn read_event() -> Option<(String, String)> {
 
     for field in DROPPED_FIELDS {
         map.remove(*field);
+    }
+    // Claude's questions are answered in the Claude app, on the PC or the phone: the
+    // desktop app ignores a hook's answer and keeps its own question box open, so
+    // offering one from Boo only misled Jhon (2026-10-05). Silence leaves it to the app.
+    if event == "PermissionRequest" && map.get("tool_name").and_then(|v| v.as_str()) == Some("AskUserQuestion") {
+        return None;
     }
 
     let cwd_missing = map

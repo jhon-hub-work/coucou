@@ -523,6 +523,82 @@ body {
   white-space: nowrap;
 }
 
+.q-title {
+  /* In the fixed-height card a clipped title would otherwise shrink to nothing. */
+  flex-shrink: 0;
+  font-size: 13px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.q-options {
+  flex-wrap: wrap;
+  align-items: center;
+  row-gap: 6px;
+}
+
+.q-options .btn {
+  padding: 5px 11px;
+}
+
+.n-body {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: pre-line;
+}
+
+.q-input {
+  flex: 1;
+  min-width: 0;
+  font: 400 12px var(--font);
+  color: var(--ink);
+  background: var(--card-flat);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 6px 10px;
+  outline: none;
+}
+
+.usage-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: 4px;
+  font: 400 10px var(--font);
+  color: var(--dim-3);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.usage-meter .um-win {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.usage-meter .um-bar {
+  width: 22px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.usage-meter .um-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+}
+
+.usage-meter .um-est {
+  font-style: italic;
+  opacity: 0.8;
+}
+
 .who .count {
   font: 400 11px var(--font);
   color: var(--dim-3);

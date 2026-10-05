@@ -639,6 +639,7 @@ async fn poll_board(app: AppHandle) {
         let key = format!("{title}|{}", p.get("date")?.as_str()?);
         is_new("board", &key).then(|| IntegrationEvent { success: true, label: format!("Posted: {title}"), detail: None })
     });
+    crate::phone::board(&data);
     emit(&app, IntegrationUpdate { id: "integration_board", data, error: None, event });
 }
 
