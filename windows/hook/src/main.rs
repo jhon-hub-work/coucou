@@ -16,6 +16,11 @@
 //!
 //! Usage: `boo-hook [--agent <name>] <EventName>` (the name is also read from the JSON).
 
+// No console of its own: a console-subsystem relay opens a Windows Terminal window
+// whenever its caller doesn't hide it, and a PermissionRequest keeps that window up
+// for up to two minutes (Jhon, 2026-10-05). Piped stdin/stdout still work.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::time::Duration;
